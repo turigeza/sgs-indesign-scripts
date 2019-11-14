@@ -1,0 +1,89 @@
+@font-face {
+    font-family: 'guidebookicons';
+    src: url('fonts/guidebookicons.eot?wyo1pl');
+    src: url('fonts/guidebookicons.eot?wyo1pl#iefix') format('embedded-opentype'),
+        url('fonts/guidebookicons.ttf?wyo1pl') format('truetype'),
+        url('fonts/guidebookicons.woff?wyo1pl') format('woff'),
+        url('fonts/guidebookicons.svg?wyo1pl#guidebookicons') format('svg');
+    font-weight: normal;
+    font-style: normal;
+    font-display: block;
+}
+
+[class^="icon-"], [class*=" icon-"] {
+    /* use !important to prevent issues with browser extensions that change fonts */
+    font-family: 'guidebookicons' !important;
+    speak: none;
+    font-style: normal;
+    font-weight: normal;
+    font-variant: normal;
+    text-transform: none;
+    line-height: 1;
+    /* Better Font Rendering =========== */
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+}
+
+.icon-teas:before {
+    content: "\30";
+}
+
+.icon-cream_teas:before {
+    content: "\31";
+}
+
+.icon-homemade_teas:before {
+    content: "\32";
+}
+
+.icon-refreshments:before {
+    content: "\33";
+}
+
+.icon-public_transport:before {
+    content: "\34";
+}
+
+.icon-disabled_access:before {
+    content: "\35";
+}
+
+.icon-partial_disabled_access:before {
+    content: "\36";
+}
+
+.icon-dogs:before {
+    content: "\37";
+}
+
+.icon-children:before {
+    content: "\38";
+}
+
+.icon-new_listing:before {
+    content: "\39";
+}
+
+.icon-npc:before {
+    content: "\61";
+}
+
+.icon-snowdrops:before {
+    content: "\62";
+}
+
+.icon-plant_stall:before {
+    content: "\63";
+}
+
+.icon-landscapes:before {
+    content: "\64";
+}
+
+.icon-champion_trees:before {
+    content: "\65";
+}
+
+.icon-bunting:before {
+    content: "\66";
+}
