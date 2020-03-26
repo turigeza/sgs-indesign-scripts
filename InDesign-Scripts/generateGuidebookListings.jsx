@@ -4,10 +4,10 @@
         alert('You must select at least one district!');
         return;
     }
-    
+
     win.districts.selection;
     var k = win.districts.selection.length;
-    
+
     while(k--){
         var district = win.districts.selection[k];
         generateGuidebookListingsSingle(district, year);
@@ -21,15 +21,15 @@ function generateGuidebookListingsSingle(district, year) {
     if(!region_name){
         alert('The region name was empty for '+district);
     }
-    
+
     var data = loadData(district, year,  '/events/guidebookdata/get_district_data_for_book/' );
     if(!data){
         //alert('The website sent no data for the '+district);
         return;
         }
-    
+
     var i = data.length;
-    
+
     var rs = openFile( baseFilePath+'/district.indt' );
     if(!rs){
         return;
@@ -43,9 +43,9 @@ function generateGuidebookListingsSingle(district, year) {
 
     replaceTemplateTags(targetDocument, '{region_name}', region_name);
     replaceTemplateTags(targetDocument, '{district_name}', district.text);
-    
+
     while( i-- ){
-        
+
         var rs = openFile( baseFilePath+'/guidebooklisting.indt' );
         if(!rs){
             return;
@@ -56,23 +56,23 @@ function generateGuidebookListingsSingle(district, year) {
             alert('guidebooklisting.indt template is missing the MainTextFrame');
             return;
         }
-        
+
         var row = data[i];
         row.guidebooklisting_phone_label = row.guidebooklisting_phone ? 'T: ' : '';
-        row.guidebooklisting_phone = row.guidebooklisting_phone ? row.guidebooklisting_phone+'  ': '';
+        row.guidebooklisting_phone = row.guidebooklisting_phone ? row.guidebooklisting_phone+' ': '';
         row.guidebooklisting_email_label = row.guidebooklisting_email ? 'E: ' : '';
-        row.guidebooklisting_email = row.guidebooklisting_email ? row.guidebooklisting_email+'  ': '';
+        row.guidebooklisting_email = row.guidebooklisting_email ? row.guidebooklisting_email+' ': '';
         row.guidebooklisting_website_label = row.guidebooklisting_website ? 'W: ' : '';
         row.guidebooklisting_national_plant_collection = row.guidebooklisting_national_plant_collection ? row.guidebooklisting_national_plant_collection+'.': '';
         row.guidebooklisting_champion_trees = row.guidebooklisting_champion_trees ?  row.guidebooklisting_champion_trees + '.' : '';
         row.guidebooklisting_national_plant_collection_label = row.guidebooklisting_national_plant_collection ? '\nNational Plant Collection:  ': '';
         row.guidebooklisting_champion_trees_label = row.guidebooklisting_champion_trees ? '\nChampion Trees:  ': '';
-        
-        
+
+
         var name_end = (!row.guidebooklisting_address && !row.guidebooklisting_postcode) ? '^p' : '';
         var postcode_end = (!row.guidebooklisting_email && !row.guidebooklisting_phone && !row.guidebooklisting_opener_name) ? '^p' : '';
         var email_end = !row.guidebooklisting_website ? '^p' : '';
-        
+
         var toReplace = [
             {datakey:'guidebooklisting_formated_description', template_key: '{formated_description}'},
             {datakey:'guidebooklisting_name', template_key: '{name}'+name_end},
@@ -96,18 +96,18 @@ function generateGuidebookListingsSingle(district, year) {
             {datakey:'guidebooklisting_website', template_key: '{website}'},
             {datakey:'guidebooklisting_website_label', template_key: '{W: }'},
         ];
-        
+
         var j = toReplace.length;
         while(j--){
             var r = toReplace[j];
-            
+
             if(typeof  row[r.datakey] != 'string'){
                 alert(field+' was missing out of the data '+typeof str);
                 }
             var str = row[r.datakey];
             replaceTemplateTags(sourceDocument, r.template_key, str);
             }
-        
+
         var tags = [
               { removeGrep: '~b~b+', changeTo:"\r" },
               { removeGrep: '(<br />)', changeTo:"\r" },
@@ -130,7 +130,7 @@ function generateGuidebookListingsSingle(district, year) {
               { styleGrep: '(<span class="garden_name_3">).+(</span>)', removeGrep: '(<\/*span( class="garden_name_3")*>)', characterStyle:'guidebooklisting_garden_name'},
               { styleGrep: '(<span class="garden_name_4">).+(</span>)', removeGrep: '(<\/*span( class="garden_name_4")*>)', characterStyle:'guidebooklisting_garden_name'},
          ];
-         
+
         replaceHtmlTagsWithStyles(sourceDocument, tags);
         sourceFrame.texts[0].duplicate(LocationOptions.AT_BEGINNING, targetFrame);
         sourceDocument.close(SaveOptions.NO);
