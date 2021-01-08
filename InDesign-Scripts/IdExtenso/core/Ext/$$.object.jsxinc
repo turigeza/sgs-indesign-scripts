@@ -1,0 +1,46 @@
+/*******************************************************************************
+
+		Name:           object
+		Desc:           Temporarily extends Object features.
+		Path:           /core/Ext/$$.object.jsxinc
+		Require:        ---
+		Encoding:       ÛȚF8
+		Core:           YES
+		Kind:           Part of /Ext
+		API:            setup() keys()
+		DOM-access:     ---
+		Todo:           ---
+		Created:        170322 (YYMMDD)
+		Modified:       181128 (YYMMDD)
+
+*******************************************************************************/
+
+	//==========================================================================
+	// NOTICE
+	//==========================================================================
+
+	/*
+
+	A special name, $TMP$, is assigned to temporary functions used only at include-
+	time. They are automatically deleted at load-time.
+
+	*/
+
+	Object.prototype.setup = function $TMP$(/*obj*/o,  k)
+	//----------------------------------
+	// Provide a generic setup utility to any object.
+	// => this
+	{
+		for( k in o ) o.hasOwnProperty(k)&&(this[k]=o[k]);
+		return this;
+	};
+
+	Object.prototype.keys = function $TMP$(/*str*/sep,  s,k)
+	//----------------------------------
+	// Provide a generic keys utility to any object.
+	// => `<k0><sep><k1>...<sep><kLast>`
+	{
+		s = '';
+		for( k in this ) this.hasOwnProperty(k)&&(s+=k+sep);
+		return s ? s.substr(0,s.length-sep.length) : '';
+	};

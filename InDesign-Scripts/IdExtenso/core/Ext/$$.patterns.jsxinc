@@ -1,0 +1,383 @@
+/*******************************************************************************
+
+		Name:           patterns
+		Desc:           Escape sequences and special characters in both RegExp and String.
+		Path:           /core/Ext/$$.patterns.jsxinc
+		Require:        ---
+		Encoding:       ÛȚF8
+		Core:           YES
+		Kind:           Part of /Ext
+		API:            {various static regexes and strings}
+		DOM-access:     NO
+		Todo:           ---
+		Created:        170320 (YYMMDD)
+		Modified:       190220 (YYMMDD)
+
+*******************************************************************************/
+
+	//==========================================================================
+	// BACKGROUND
+	//==========================================================================
+
+	/*
+	Source text is assumed to be a sequence of 16-bit code units (...).
+	Such a source text may include sequences of 16-bit code units that are
+	not valid UTF-16 character encodings. If an actual source text is
+	encoded in a form other than 16-bit code units it must be processed as
+	if it was first converted to UTF-16.
+	
+	SourceChar    ::  any \uHHHH
+	
+	[ECMA] Only the characters (below) are treated as line terminators.
+	Other new line or line breaking characters are treated as white space
+	but not as line terminators. The character sequence <CR><LF> is
+	commonly used as a line terminator. It should be considered a single
+	character for the purpose of reporting line numbers.
+	
+	Definitions:
+	\u000A   Line Feed (new line)   <LF>   \n
+	\u000D   Carriage Return        <CR>   \r
+	\u2028   Line Separator         <LS>
+	\u2029   Paragraph Separator    <PS>
+	
+	LineTerm      ::  <LF>  |  <CR>  |  <LS>  |  <PS>
+	LineTermSeq   ::  <LF>  |  <CR> [lookahead non-<LF>]  |  <LS>  |  <PS>  |  <CR> + <LF>
+	
+	A string literal is zero or more characters enclosed in single or
+	double quotes. Each character may be represented by an escape
+	sequence. All characters may appear literally in a string literal
+	except for the closing quote character, backslash, carriage return,
+	line separator, paragraph separator, and line feed. Any character may
+	appear in the form of an escape sequence.
+	
+	Definitions:
+	\u0022   Double Quote          <DQ>   \"
+	\u0027   Single Quote          <SQ>   \'
+	\u005C   Backslash             <BK>   \\
+	---
+	\u0008   Backspace             <BS>   \b
+	\u0009   Horizontal tab        <TB>   \t
+	\u000B   Vertical tab          <VT>   \v
+	\u000C   Form feed             <FF>   \f
+	---
+	StringLiteral ::  <DQ> + DblLiteral* + <DQ>  |  <SQ> + SglLiteral* + <SQ>
+	DblLiteral    ::  SourceChar - { <DQ> , <BK> , LineTerm }  |  BkSeq
+	SglLiteral    ::  SourceChar - { <SQ> , <BK> , LineTerm }  |  BkSeq
+	BkSeq         ::  <BK> + ( EscSeq | LineTermSeq )
+	---
+	EscSeq        ::  SglEscChar  |  NonEscChar  |  0 [lookahead non-DecimalDigit]  |  HexEsc
+	EscChar       ::  SglEscChar  |  DecimalDigit  |  x  |  u
+	NonEscChar    ::  SourceChar - { EscChar , LineTerm }
+	---
+	SglEscChar    ::  <SQ>  |  <DQ>  |  <BK>  |  b  |  f  |  n  |  r  |  t  |  v
+	HexEsc        ::  x + HexDigit{2}  |  u + HexDigit{4}
+	
+	*/
+
+	//==========================================================================
+	// IMPLEMENTATION NOTES
+	//==========================================================================
+
+	/*
+
+	Special Character Naming Conventions (Esc and controls)
+	-----------------------------------------------------
+	UTF16    NAME                      CODE      \
+	-----------------------------------------------------
+	\u005C   Backslash                 <BK>      \
+	\u0022   Double Quote              <DQ>      "
+	\u0027   Single Quote              <SQ>      '
+	---
+	\u007C   Vertical Line             <OR>      |    [ADD180508]
+	---
+	\u000A   Line Feed (EOL)           <LF>      n
+	\u000D   Carriage Return           <CR>      r
+	\u2028   Line Separator            <LS>    
+	\u2029   Paragraph Separator       <PS>    
+	---
+	\u0008   Backspace                 <BS>      b
+	\u0009   Horizontal Tabulation     <TB>      t
+	\u000B   Vertical Tabulation       <VT>      v
+	\u000C   Form Feed                 <FF>      f
+	---
+	\u0000   Null Ctrl                 <X0>
+	\u0001   Start of Heading Ctrl     <X1>
+	\u0002   Start of Text Ctrl        <X2>
+	\u0003   End of Text Ctrl          <X3>      [used in InDesign]
+	\u0004   End of Transmission Ctrl  <X4>
+	\u0005   Enquiry Ctrl              <X5>
+	\u0006   Acknowledge Ctrl          <X6>
+	\u0007   Alert Ctrl                <X7>      [used in InDesign]
+	\u000E   Locking-Shift One         <XE>
+	\u000F   Locking-Shift Zero        <XF>
+	-----------------------------------------------------
+	
+	[REM] In ExtendScript the esc "\X99" is parsed as "\x99", while
+	"\U9999" is not "\u9999". That is, only `\x` is case insensitive.
+
+	NOTES ON U+0000 aka <X0>
+
+	`\0` is a valid escape sequence for <X0> only *if the next character
+	is not a decimal digit*. Also, ExtendScript CS4/CS5/CS6 does not
+	properly manage split() and/or replace() when the pattern involves
+	<X0>. For these reasons we do not declare <X0> among the escapable
+	characters. Instead, reduction routines manage <X0> through indexOf().
+
+	The native result of `"\x00".toSource()` is `String("\x00")`, noting
+	that `"\x00".length == 1`. However, `"\x00"[0]` is considered empty
+	since `"\x00".charAt(0) === ""`  and  `"\x00".charAt(0).length == 0`.
+	As a consequence, `"\x00"[0][0]` is undefined!
+
+
+	NOTES ON TRIPLE-QUOTED LITERALS
+	
+	1. ExtendScript triple-quoted syntax for literal strings supports
+	all JS escape sequences: \" \' \\ \n \r \b \t \v \f \xHH \uHHHH.
+	Thus, when such an escape sequence occurs literally inside the triple
+	quote scope, *the associated characters are generated*.
+
+	2. Characters that do not reevaluate thru triple quotes. Let
+	`evalTriple(S)` refer to `eval('"""' + S + '"""')`. It is usually
+	true that `evalTriple(S)===S`, but there are a critical exceptions.
+
+	(a) Out-of-memory error for S==<BK> -- i.e. evalTriple(<BK>) crashes.
+
+	(b) evalTriple(<X0>) is " " (space) while obviously """\x00"""
+	    and """\u0000""" result in <X0>.
+	
+	(c) evalTriple(<CR>) is either <CR> or <LF> depending on the OS.
+	    evalTriple(<LF>) is either <LF> or <CR> depending on the OS.
+	    Win returns <NL> while Mac likely returns <CR>.
+	    Of course we still have:
+	      """\x0D"""===<CR>    and   """\x0A"""===<LF>
+
+	(d) <LS> and <PS> are evalTripled as <CR> (Win) or <NL> (Mac),
+	    that is, they're interpreted either <NL> (Win) or <CR> (Mac).
+	    Course """\u2028""" and """\u2029""" still work as expected.
+
+	(e) The below 'dangerous' characters lead to the empty string:
+
+	     U+0600 U+0601 U+0602 U+0603 U+06DD U+070F U+17B4 U+17B5
+	     U+200C U+200D U+200E U+200F U+2028 U+2029 U+202A U+202B
+	     U+202C U+202D U+202E U+2060 U+2061 U+2062 U+2063 U+206A
+	     U+206B U+206C U+206D U+206E U+206F
+	     U+FEFF U+FFF9 U+FFFA U+FFFB
+
+	3. Escape sequences that do not reevaluate thru triple quotes.
+	Let X be a character and compare the string `<BK>X`
+	with `<BK> + evalTriple(<BK>X)`.
+	
+	(a) Results are different if X is one of the characters:
+	    <X0>, <CR>, 0, 1, 2, 3, 4, 5, 6, 7, b, f, n, r, t, v
+	
+	(b) Out-of-memory error if X is one of the 'dangerous'
+	    characters above -- cf. 2.(e)
+
+	*/
+
+	// <BK> U+005C `\` Backslash
+	// -------------------------------------------------------------------------
+	String.BK   = '\u005C';
+	RegExp.BK   = /\u005C/g;                                    // /BK/
+	String._BK  = String.BK + String.BK;                        // Regular esc `\\`
+	RegExp._BK  = /\u005C(?:\u005C|u005[Cc]|[xX]05[Cc])/g;      // /any-esc/
+	RegExp.BKBK = /\u005C\u005C/g;                              // /BKBK/ only
+
+	// <SL> U+002F `/` Slash (Solidus)
+	// -------------------------------------------------------------------------
+	String.SL   = '\u002F';
+	RegExp.SL   = /\u002F/g;                                    // /SL/
+	String._SL  = String.BK + String.SL;                        // Regular esc `\/`
+	RegExp._SL  = /\u005C(?:\u002F|u002[Ff]|[xX]02[Ff])/g;      // /any-esc/
+	RegExp.BKSL = /\u005C\u002F/g;                              // /BKSL/ only
+	RegExp.SLs  = /\u002F+/g;                                   // /SL+/
+
+	// <DT> U+002E `.` Dot (Full Stop)
+	// -------------------------------------------------------------------------
+	String.DT   = '\u002E';
+	RegExp.DT   = /\u002E/g;                                    // /DT/
+	String._DT  = String.BK + String.DT;                        // Regular esc `\.`
+	RegExp._DT  = /\u005C(?:\u002E|u002[Ee]|[xX]02[Ee])/g;      // /any-esc/
+	RegExp.BKDT = /\u005C\u002E/g;                              // /BKDT/ only
+	// ---
+	RegExp.DTs  = /\u002E+/g;                                   // /one-or-more-DT/
+	RegExp.DT2  = /\u002E\u002E+/g;                             // /two-or-more-DT/
+	RegExp.DT3  = /\u002E\u002E\u002E+/g;                       // /three-or-more-DT/
+
+	// <OR> U+007C `|` VERTICAL LINE (vertical bar) [ADD180508]
+	// -------------------------------------------------------------------------
+	String.OR   = '\u007C';
+	RegExp.OR   = /\u007C/g;                                    // /OR/
+	String._OR  = String.BK + String.OR;                        // Regular esc `\|`
+	RegExp._OR  = /\u005C(?:\u007C|u007[Cc]|[xX]07[Cc])/g;      // /any-esc/
+	RegExp.BKOR = /\u005C\u007C/g;                              // /BKOR/ only
+
+	// <DQ> U+0022 `"` Double Quote
+	// <SQ> U+0027 `'` Single Quote
+	// -------------------------------------------------------------------------
+	String.DQ   = '\u0022';
+	RegExp.DQ   = /\u0022/g;                                    // /DQ/
+	String._DQ  = String.BKDQ = String.BK + String.DQ;          // Regular esc `\"`
+	RegExp.BKDQ = /\u005C\u0022/g;                              // /BKDQ/ only
+	RegExp._DQ  = /\u005C(?:\u0022|u0022|[xX]22)/g;             // /any-esc/
+	// ---
+	String.SQ   = '\u0027';
+	RegExp.SQ   = /\u0027/g;                                    // /SQ/
+	String._SQ  = String.BKSQ = String.BK + String.SQ;          // Regular esc `\"`
+	RegExp.BKSQ = /\u005C\u0027/g;                              // /BKSQ/ only
+	RegExp._SQ  = /\u005C(?:\u0027|u0027|[xX]27)/g;             // /any-esc/
+
+	// <CR> U+000D \r  Carriage Return
+	// <LF> U+000A \n  Line Feed
+	// <LS> U+2028     Line Separator
+	// <PS> U+2029     Paragraph Separator
+	// ---
+	// A LineTerminator character cannot appear in a string literal, even if
+	// preceded by a backslash. The correct way to cause a line terminator
+	// character to be part of the string value of a string literal is to use
+	// an escape sequence such as \n or \u000A.
+	// -------------------------------------------------------------------------
+	String.CR   = '\u000D';
+	RegExp.CR   = /\u000D/g;                                    // /CR/
+	String._CR  = String.BK + 'r';                              // Regular esc `\r`
+	RegExp._CR  = /\u005C(?:r|u000[Dd]|[xX]0[Dd])/g;            // /any-esc/
+	// ---
+	String.LF   = '\u000A';
+	RegExp.LF   = /\u000A/g;                                    // /LF/
+	String._LF  = String.BK + 'n';                              // Regular esc `\n`
+	RegExp._LF  = /\u005C(?:n|u000[Aa]|[xX]0[Aa])/g;            // /any-esc/
+	// ---
+	String.CRLF = String.CR + String.LF;                        // <CRLF>=<CR>+<LF>
+	RegExp.CRLF = RegExp(String.CRLF,'g');                      // /CRLF/
+	String._CRLF= String._CR + String._LF;                      // Regular esc `\r\n`
+	RegExp._CRLF= /\u005C(?:r|u000[Dd]|[xX]0[Dd])\u005C(?:n|u000[Aa]|[xX]0[Aa])/g; // /any-esc/
+	// ---
+	String.LS   = '\u2028';
+	RegExp.LS   = /\u2028/g                                     // /LS/
+	// ---
+	String.PS   = '\u2029';
+	RegExp.PS   = /\u2029/g                                     // /PS/
+	// ---
+	RegExp.LINE = /\u000D|\u000A|\u000D\u000A/g;                // /CR|LF|CRLF/
+	RegExp.LINEs= /[\u000D\u000A]+/g;                           // /CR|LF/+
+	RegExp.JSNLs= /[\u000D\u000A\u2028\u2029]+/g;               // /CR|LF|LS|PS/+  (JS newline)
+	RegExp.TBNL = /[\u0009\u000D\u000A]/g;                      // /TB|CR|LF/
+
+	// <TB> U+0009 `\t` Horizontal Tab.
+	// <VT> U+000B `\v` Vertical Tab.
+	// <BS> U+0008 `\b` Backspace.
+	// <FF> U+000C `\f` Form Feed.
+	// -------------------------------------------------------------------------
+	String.TB   = '\u0009';
+	RegExp.TB   = /\u0009/g;                                    // /TB/
+	String._TB  = String.BK + 't';                              // Regular esc `\t`
+	RegExp._TB  = /\u005C(?:t|u0009|[xX]09)/g;                  // /any-esc/
+	// ---
+	String.VT   = '\u000B';
+	RegExp.VT   = /\u000B/g;                                    // /VT/
+	String._VT  = String.BK + 'v';                              // Regular esc `\v`
+	RegExp._VT  = /\u005C(?:v|u000[Bb]|[xX]0[Bb])/g;            // /any-esc/
+	// ---
+	String.BS   = '\u0008';
+	RegExp.BS   = /\u0008/g;                                    // /BS/
+	String._BS  = String.BK + 'b';                              // Regular esc `\b`
+	RegExp._BS  = /\u005C(?:b|u0008|[xX]08)/g;                  // /any-esc/
+	// ---
+	String.FF   = '\u000C';
+	RegExp.FF   = /\u000C/g;                                    // /FF/
+	String._FF  = String.BK + 'f';                              // Regular esc `\f`
+	RegExp._FF  = /\u005C(?:f|u000[Cc]|[xX]0[Cc])/g;            // /any-esc/
+
+	// Other ASCII controls.
+	// -------------------------------------------------------------------------
+	String.X0   = '\u0000';                                     // U+0000 Nul
+	RegExp.X0   = /\u0000/g;                                    // /X0/
+	RegExp._X0  = /\u005C(?:u0000|[xX]00|(?:0(?!\d)))/g;        // /any-esc/
+	// ---
+	String.X1   = '\u0001';                                     // U+0001 Start of Heading
+	RegExp.X1   = /\u0001/g;                                    // /X1/
+	RegExp._X1  = /\u005C(?:u0001|[xX]01)/g;                    // /any-esc/
+	// ---
+	String.X2   = '\u0002';                                     // U+0002 Start of Text
+	RegExp.X2   = /\u0002/g;                                    // /X2/
+	// ---
+	String.X3   = '\u0003';                                     // U+0003 End of Text [used in ID]
+	RegExp.X3   = /\u0003/g;                                    // /X3/
+	// ---
+	String.X4   = '\u0004';                                     // U+0004 End of Transm
+	RegExp.X4   = /\u0004/g;                                    // /X4/
+	// ---
+	String.X5   = '\u0005';                                     // U+0005 Enquiry
+	RegExp.X5   = /\u0005/g;                                    // /X5/
+	// ---
+	String.X6   = '\u0006';                                     // U+0006 Acknowledge
+	RegExp.X6   = /\u0006/g;                                    // /X6/
+	// ---
+	String.X7   = '\u0007';                                     // U+0007 Alert [used in ID]
+	RegExp.X7   = /\u0007/g;                                    // /X7/
+	// ---
+	String.XE   = '\u000E';                                     // U+000E Locking-Shift-1
+	RegExp.XE   = /\u000E/g;                                    // /XE/
+	// ---
+	String.XF   = '\u000F';                                     // U+000F Locking-Shift-0
+	RegExp.XF   = /\u000F/g;                                    // /XF/
+
+	// Various patterns of interest.
+	// -------------------------------------------------------------------------
+	RegExp.BKuZ = /\u005Cu00/g;                                 // `\u00`
+	// --- /any-digit/
+	RegExp.DIGI = /\d/g;
+	// --- /one-or-more-digits/
+	RegExp.DIGIs= /\d+/g;
+	// --- /any-nondigit/  [180413]
+	RegExp.NOND = /\D/g;
+	// --- /one-or-more-nondigits/  [180413]
+	RegExp.NONDs= /\D+/g;
+	// --- /basic-javascript-identifier/  [190220]
+	RegExp.JSID= /^(?:[\$_A-Za-z][\$_A-Za-z0-9]*)$/g;           // [REM] Doesn't exclude reserved tokens
+	// --- /adobe-flag-hexa/
+	RegExp.ADBE = /^(?:3[0-9]|[46][1-9A-F]|[57][0-9A]){3}(?:3[0-9]|[46][1-9A-F]|[57][0-9A]|20)$/g;
+	// --- /over-0x7F/
+	RegExp.OV7F = /[\u0080-\uFFFF]/g;
+	// --- /extendscript-overloadable-operator/ [CHG171204]
+	RegExp.EXOP = /^(?:[*+~%&\/\-\|\^]|<[=<]?|>>>?|===?)$/g;
+	// --- /controls-and-indesign-spaces/ [ADD180403]
+	RegExp.SPCE = /[\u0000-\u0020\u00A0\u2000-\u200C\u2028\u2029\u202F\u205F\u3000]/g;
+
+	// Escaping and parsing RegExps. [ADD171205]
+	// [REM] CS5 requires escaping `|` in regex classes too.
+	// -------------------------------------------------------------------------
+
+	// (RegExp-Operators.)
+	// Purpose: Detect the presence of typical regex symbols.
+	// ---
+	RegExp.REOP = /[\|\^$(.)\[\]{*+?}]/g;                       // `|^$(.)[]{*+?}`
+
+	// (Canonical-Escaping-Class, including <BK>.)
+	// Purpose: Detect symbols that need to be escaped in a string
+	// so it can go into `RegExp(...)` with no regex edge effect.
+	// See RegExp.escape(str, 0).
+	// ---
+	RegExp.RESC = /[\|\^$(.)\[\]{*+?}\\]/g;                     // `|^$(.)[]{*+?}\`
+
+	// (Safe-Escaping-Pattern, including <BK>, adding `-`)
+	// Purpose: Detect symbols that need to be escaped in a
+	// string so it can be combined with others and go into
+	// `RegExp(...)` with no regex effect. Stronger security.
+	// Note: Leading hex digits are to be treated separately.
+	// See RegExp.escape(str, 1).
+	// ---
+	RegExp.RSAF = /[\|\^$(.)\[\]{*+?}\-\\]/g;                   // `|^$(.)[]{*+?}\-`
+
+	// (Literal-Escaping-Pattern, excluding <BK>, adding <SL>.)
+	// Purpose: Detect symbols that need to be escaped in a string
+	// so it can be combined with others and go into
+	// `eval('/' + ... + '/')` with no regex edge effect.
+	// [WARNING] This pattern does not capture <BK>, white spaces or
+	// other 'dangerous' characters, because `input.toSource()` MUST
+	// anyway be applied upstream to take care of them. Interestingly,
+	// none of the characters below undergo escaping from toSource().
+	// Also, leading hex digits are to be treated separately.
+	// See RegExp.escape(str, -1).
+	// ---
+	RegExp.RLIT = /[\|\^$(.)\[\]{*+?}\-\/]/g;                   // `|^$(.)[]{*+?}/-`

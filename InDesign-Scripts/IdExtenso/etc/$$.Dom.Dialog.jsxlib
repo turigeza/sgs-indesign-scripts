@@ -1,0 +1,833 @@
+/*******************************************************************************
+
+		Name:           Dialog
+		Desc:           Encapsulates an InDesign DOM dialog and its widgets.
+		Path:           /etc/$$.Dom.Dialog.jsxlib
+		Require:        $$.Dom
+		Encoding:       ÛȚF8
+		Core:           NO
+		Kind:           Module (within $$.Dom.)
+		API:            =fromXML() SmartMeasurementBoxes
+		                => Dialog.prototype.getWidgetKey()
+		                => Dialog.prototype.getValueKey()
+		                => Dialog.prototype.getStringKey()
+		                => Dialog.prototype.setValueKey()
+		                => Dialog.prototype.changeListKey()
+		                => Dialog.prototype.changeUnitKey()
+		DOM-access:     YES
+		Todo:           ---
+		Created:        180311 (YYMMDD)
+		Modified:       180531 (YYMMDD)
+
+*******************************************************************************/
+
+;$$.Dom.hasOwnProperty('Dialog') || eval(__(MODULE, $$.Dom.toSource(), 'Dialog', 180531, 'fromXML'))
+
+	//==========================================================================
+	// BACKGROUND
+	//==========================================================================
+	
+	/*
+
+	A DOM `Dialog` instance is created by calling `app.dialogs.add(...)`
+	and then becomes an element of a Dialogs collection. Dialogs are session-
+	persistent (unless manually destroyed.)
+	
+	In UI terms, a Dialog entirely consists of a collection of columns
+	(`.dialogColumns`) which contain subwidgets (containers or controls) in
+	a recursive fashion. Dialog's relevant scalar properties and methods are:
+
+		  id        (uint)   Unique ID.
+		  ----------------------------------------------------------------------
+		  label     (str)    Arbitrary label string.
+		  ----------------------------------------------------------------------
+		  name      (str)    Name of the dialog.
+		  ----------------------------------------------------------------------
+		  canCancel (bool)   Creates a Cancel button that allows users to close
+		                     the box w/o saving selections. If false, the dialog
+		                     contains an OK button but no Cancel button.
+		  ======================================================================
+		  show()    =>bool   Displays the dialog.
+		  ----------------------------------------------------------------------
+		  destroy() =>undef  Destroys the object. Dialog objects remain in memory
+		                     until you destroy them or quit the program.
+
+	A `DialogColumn` (DCOL) instance is created through DialogColumns.add(...) and
+	can instantiate any needed control ('widget') through dedicated collections:
+		
+	// CONTAINERS
+	dialogRows             (DialogRows)            => (DROW) DialogRow
+	borderPanels           (BorderPanels)          => (BPNL) BorderPanel
+	enablingGroups         (EnablingGroups)        => (EGRP) EnablingGroup
+
+	// RADIOS
+	radiobuttonGroups      (RadiobuttonGroups)     => (RGRP) RadiobuttonGroup
+	                                               -> (RBTN) RadioButtonControl+
+	
+	// MISC
+	staticTexts            (StaticTexts)           => (STAT) StaticText
+	checkboxControls       (CheckboxControls)      => (CBOX) CheckboxControl
+	dropdowns              (Dropdowns)             => (DROP) Dropdown
+
+	// EDITBOX WIDGETS
+	textEditboxes          (TextEditboxes)         => (TEBX) TextEditbox
+	angleEditboxes         (AngleEditboxes)        => (AEBX) AngleEditbox
+	integerEditboxes       (IntegerEditboxes)      => (IEBX) IntegerEditbox
+	measurementEditboxes   (MeasurementEditboxes)  => (MEBX) MeasurementEditbox
+	percentEditboxes       (PercentEditboxes)      => (PEBX) PercentEditbox
+	realEditboxes          (RealEditboxes)         => (REBX) RealEditbox
+
+	// COMBOBOX COUNTERPARTS
+	angleComboboxes        (AngleComboboxes)       => (ACBX) AngleCombobox
+	integerComboboxes      (IntegerComboboxes)     => (ICBX) IntegerCombobox
+	measurementComboboxes  (MeasurementComboboxes) => (MCBX) MeasurementCombobox
+	percentComboboxes      (PercentComboboxes)     => (PCBX) PercentCombobox
+	realComboboxes         (RealComboboxes)        => (RCBX) RealCombobox
+
+	The hierarchical structure can then be described as follows:
+
+		     Dialog  ->  DCOL+
+		       DCOL  ->  ( DROW | BPNL | EGRP | RGRP | <Control> )+
+		       DROW  ->  ( DCOL | BPNL | EGRP | RGRP | <Control> )+
+		       BPNL  ->  ( DCOL | BPNL | EGRP | RGRP | <Control> )+
+		       EGRP  ->  ( DCOL | BPNL | EGRP | RGRP | <Control> )+
+		       RGRP  ->  RBTN+
+		with:
+		  <Control>  ==  STAT | CBOX | DROP | <Editbox> | <Combobox>
+		  <Editbox>  ==  TEBX | AEBX | IEBX | MEBX | PEBX | REBX
+		  <Combobox> ==         ACBX | ICBX | MCBX | PCBX | RCBX
+	
+	Any component of a Dialog belongs to the abstract class `Widget` which
+	provides a minimal API common to all objects:
+	
+	      id ; index ; isValid ; minWidth ; parent ; properties
+	
+	Here is the specific API of the widgets, excluding the specific collections
+	shown above:
+	
+	      DialogColumn      (DCOL) .widgets                        // no minWidth
+	      DialogRow         (DROW) .widgets                        // no minWidth
+	      ----------------------------------------------------------------------
+	      BorderPanel       (BPNL) .widgets
+	      EnablingGroup     (EGRP) .widgets .checkedState  .staticLabel
+	      ----------------------------------------------------------------------
+	      RadiobuttonGroup  (RGRP)          .selectedButton               // uint
+	      RadiobuttonControl(RBTN)          .checkedState  .staticLabel
+	      ----------------------------------------------------------------------
+	      StaticText        (STAT)                         .staticLabel
+	      CheckboxControl   (CBOX)          .checkedState  .staticLabel
+	      Dropdown          (DROP)          .selectedIndex .stringList
+	      ----------------------------------------------------------------------
+	      TextEditbox        (TEBX)         .editContents
+	      AngleEditbox       (AEBX)         .editContents .editValue            (+)
+	      IntegerEditbox     (IEBX)         .editContents .editValue            (+)
+	      MeasurementEditbox (MEBX)         .editContents .editValue .editUnits (+)
+	      PercentEditbox     (PEBX)         .editContents .editValue            (+)
+	      RealEditbox        (REBX)         .editContents .editValue            (+)
+	      // ---
+	      (+) Numeric editboxes also provide the properties:
+	                                       .minimumValue .maximumValue
+	                                       .smallNudge .largeNudge
+	      ----------------------------------------------------------------------
+	      AngleCombobox       (ACBX)          
+	      IntegerCombobox     (ICBX)          The combobox counterpart of a
+	      MeasurementCombobox (MCBX)          numeric editbox has the same api,
+	      PercentCombobox     (PCBX)          it just exposes the `stringList`
+	      RealCombobox        (RCBX)          property in addition.
+
+	*/
+
+	//==========================================================================
+	// NOTICE
+	//==========================================================================
+
+	/*
+
+	The present module provides a lightweight API for creating and managing DOM
+	dialogs using XML descriptors. The automatic method `fromXML(xml)` instantly
+	creates a fully customized dialog with all its children, as specified in the XML
+	structure. For example:
+
+	      var myDlg = $$.Dom.Dialog(
+	         <Dialog name="My Dialog">
+	           <DialogColumn>
+	             <TextEditbox editContents="Type your text here" />
+	             <Checkbox checkedState="false" />
+	           </DialogColumn>
+	         </Dialog>
+	      );
+
+	In addition, Dom.Dialog offers shortcuts and special attributes for making the
+	XML descriptor shorter and more uniform.
+
+	The following attributes are available:
+	      ------------------------------
+	      checked:  alias of 'checkedState'
+	      caption:  alias of 'staticLabel' ; adds a label component if needed.
+	      edit:     alias of 'editContents'
+	      value:    alias of 'editValue'   ; see special case `SmartMeasurementBoxes` flag.
+	      units:    alias of 'editUnits'   ; [ADD180514]
+	      list:     alias of 'stringList'
+	      ------------------------------
+	      selected: alias of 'selectedButton' (in RadiobuttonGroup)
+	                      or 'selectedIndex'  (in Dropdown)
+	      ------------------------------
+	      min:      alias of 'minimumValue'
+	      max:      alias of 'maximumValue'
+	      small:    alias of 'smallNudge'
+	      large:    alias of 'largeNudge'
+	      ------------------------------
+	      key:      special widget identifier
+
+	No matter how deep a widget is in the dialog structure, you can assign to it a
+	`key` attribute that allows to easily set or get its value using the prototyped
+	methods `getValueKey(key)` and `setValueKey(key,value)` added in Dialog.prototype.
+
+	This way you no longer have to browse the Dialog structure to handle the
+	controls. `Dom.Dialog` hides the internal complexity of DOM collections and
+	related instances. For example, assuming a key `myCheck` is defined for a
+	Checkbox, use `myDlg.getValueKey('myCheck')` to get the checked state of that
+	specific control.
+	
+	Finally, widget class names can be abbreviated (in the XML descriptor) using
+	the following 4-character aliases:
+
+	      DCOL = DialogColumn                  TEBX = TextEditbox         
+	      DROW = DialogRow                     AEBX = AngleEditbox        
+	      BPNL = BorderPanel                   IEBX = IntegerEditbox      
+	      EGRP = EnablingGroup                 MEBX = MeasurementEditbox  
+	      -------------------------            PEBX = PercentEditbox      
+	      RGRP = RadiobuttonGroup              REBX = RealEditbox         
+	      RBTN = RadiobuttonControl            -------------------------  
+	      -------------------------            ACBX = AngleCombobox       
+	      STAT = StaticText                    ICBX = IntegerCombobox     
+	      CBOX = CheckboxControl               MCBX = MeasurementCombobox 
+	      DROP = Dropdown                      PCBX = PercentCombobox     
+	                                           RCBX = RealCombobox        
+
+	[CHG180514] Smart Measurement Boxes
+	
+	The public property `SmartMeasurementBoxes` can be set to either 1
+	(default) or 0 from the client code.
+	
+	When this flag is turned ON, every measurement widget --MEBX or MCBX--
+	expects and returns *numeric* values with respect to the particular
+	unit applied to the widget (cf `editUnits` property.) This affects
+	the prototyped methods `getValueKey` and `setValueKey`. On the XML
+	side the `editValue` attribute (alias `value`) is interpreted with
+	respect to editUnits as well. (Note however that `myWidget.editValue`
+	keeps seeing the magnitude in pt since this is the native DOM behaviour.)
+	
+	If SmartMeasurementBoxes is turned OFF, the widget behaves in legacy
+	mode: numeric values match `editValue` and imply points, while
+	string values match `editContents` and imply editUnits.
+	
+	In summary, `SmartMeasurementBoxes==1` guarantees that numeric values
+	managed through the present module are understood relative to the unit
+	associated to the widget. This is useful when you need to set, get, and
+	compute magnitudes straight into a particular unit which is not POINTS.
+	
+	For example, in the below declaration,
+	
+	      <MEBX value="3.5" min="1" max="10" units="PICAS"/>
+	
+	the attributes `value` , `min` and `max` are interpreted in PICAS, meaning
+	that the box will display "3p6" (3p6 == 3.5 picas) and the value can range
+	from 1p0 to 10p0.
+	
+	[REM] In the particular example above, note that `value="3p6"` wouldn't be
+	a valid assignment since the `value` attribute expects a numeral. If you
+	want to provide a measurement string ("3p6", "5mm", etc) use the `edit`
+	attribute instead.
+	
+	*/
+
+	[PRIVATE]
+	
+	({
+		GETW : function(/*Dialog*/dlg,/*str*/k,  s,t)
+		//----------------------------------
+		// (Get-Widget.) Generic accessor.
+		// ---
+		// => undefined [KO]  |  Widget [OK]
+		{
+			dlg = dlg.getElements()[0]; // Force singular specifier
+
+			if( !(s=dlg.properties.label) ) return;
+
+			k = '\x02' + k + '\x01';
+			if( -1 == (t=s.indexOf(k)) ) return;
+
+			t = parseInt(s.substr(t+k.length));
+			if( !(t=dlg.dialogColumns.everyItem().widgets.itemByID(t)).isValid ) return;
+			
+			return t.getElements()[0];
+		},
+
+		//----------------------------------
+		// The below methods are automatically promoted as
+		// `Dialog.prototype.<methName>` at loading time.
+		// The `this` context refers to the Dialog instance.
+		// Cf. onEngine.
+		//----------------------------------
+
+		GTWK : function getWidgetKey(/*str*/k)
+		//----------------------------------
+		// (Get-Widget-by-Key.) [ADD180515] Widget accessor.
+		// [REM] this === Dialog instance.
+		// ---
+		// => undefined [KO]  |  Widget [OK]
+		{
+			return callee.µ['~'].GETW(this,k);
+		},
+
+		GTVK : function getValueKey(/*str*/k,  o,t,s)
+		//----------------------------------
+		// (Get-Value-by-Key.)
+		// [REM] this === Dialog instance.
+		// ---
+		// [ADD180514] In measurement box case (MEBX|MCBX), this
+		// function returns a number (unlike getStringKey)
+		// but with respect to the `SmartMeasurementBoxes` flag:
+		// - If SmartMeasurementBoxes is ON, coerces the magnitude
+		//   into editUnits (note: contents like "3p6" becomes 3.5) ;
+		// - If SmartMeasurementBoxes is OFF, returns editValue
+		//   (magnitude in *points*.)
+		// ---
+		// => undefined [KO]  |  bool|num|str [OK]
+		{
+			if( !(o=callee.µ['~'].GETW(this,k)) ) return;
+			
+			o = o.properties;
+			
+			// [ADD180514] Measurement box case.
+			// ---
+			if( callee.µ.SmartMeasurementBoxes && o.hasOwnProperty('editUnits') )
+			{
+				s = o.editContents;
+
+				// Usually parseFloat(s) is fine, unless s has the form
+				// ##p## (resp. ##c##) in PICAS (resp. CICEROS) case.
+				// ---
+				t = +o.editUnits;
+				t = ( callee.PC==t && 'p' ) || ( callee.CI==t && 'c' );
+				t = t ? s.indexOf(t) : -1;
+
+				if( 0 <= t )
+				{
+					0 > (k='-'==s.charAt(0)?-1:1) && ((s=s.substr(1)),--t);
+					t = k*( (parseInt(s.substr(0,t),10)||0) + (parseFloat(s.substr(1+t))||0)/12 );
+				}
+				else
+				{
+					t = parseFloat(s)||0;
+				}
+				
+				return t;
+			}
+
+			o.hasOwnProperty(k='checkedState')
+			|| o.hasOwnProperty(k='editValue')
+			|| o.hasOwnProperty(k='editContents')
+			|| o.hasOwnProperty(k='selectedIndex')
+			|| o.hasOwnProperty(k='selectedButton')
+			|| o.hasOwnProperty(k='staticLabel');
+
+			return o[k];
+		}
+		.setup({
+			PC: +MeasurementUnits.PICAS,
+			CI: +MeasurementUnits.CICEROS,
+		}),
+
+		GTSK : function getStringKey(/*str*/k,  wg,o)
+		//----------------------------------
+		// (Get-String-by-Key.)
+		// [REM] this === Dialog instance.
+		// [ADD180508] Unlike getValueKey, this method gives precedence
+		// to `editContents` and returns a string rather than an index
+		// when relevant.
+		// => undefined [KO]  |  str [OK]
+		{
+			if( !(wg=callee.µ['~'].GETW(this,k)) ) return;
+			
+			(o=wg.properties).hasOwnProperty(k='editContents')
+			|| o.hasOwnProperty(k='selectedIndex')
+			|| o.hasOwnProperty(k='selectedButton')
+			|| o.hasOwnProperty(k='staticLabel')
+			|| o.hasOwnProperty(k='checkedState')
+			|| o.hasOwnProperty(k='editValue');
+
+			if( 'selectedIndex'==k ) return o.stringList[o[k]];
+
+			if( 'selectedButton'==k && (wg=wg.radiobuttonControls[o[k]]).isValid )
+			{
+				o = wg.properties;
+				k = 'staticLabel';
+			}
+
+			return String(o[k]);
+		},
+
+		STVK : function setValueKey(/*str*/k,/*str|num|bool*/v,  t,o,a,i)
+		//----------------------------------
+		// (Set-Value-for-Key.)
+		// [REM] this === Dialog instance.
+		// [FIX180313] Typo.
+		// ---
+		// [CHG180514] Measurement box case (MEBX|MCBX.)
+		// (A) If `v` is a string (not a number) it is always assumed
+		//     that it provides the `editContents` property as such,
+		//     as formerly done.
+		// (B) If `v` is a number *and* SmartMeasurementBoxes is ON,
+		//     `editContents` is invoked with `String(v)`.
+		//     If `v` is a number *and* SmartMeasurementBoxes is OFF,
+		//     `editValue` is invoked--which implies *points* unit.
+		// ---
+		// => undefined [KO]  |  v [OK]
+		{
+			if( !(t=callee.µ['~'].GETW(this,k)) ) return;
+			
+			o = t.properties;
+			
+			switch( typeof v )
+			{
+				case 'boolean' :
+					o.hasOwnProperty(k='checkedState') || (k=void 0);
+					break;
+
+				case 'number' :
+					// [ADD180514] Measurement box case.
+					// ---
+					if( o.hasOwnProperty('editUnits') && callee.µ.SmartMeasurementBoxes )
+					{
+						k = 'editContents';
+						v = String(v);
+						break;
+					}
+					if( o.hasOwnProperty(k='editValue') ) break;
+					if( v===(0|v) && (o.hasOwnProperty(k='selectedIndex') || o.hasOwnProperty(k='selectedButton')) ) break;
+					v = String(v);
+					// no break;
+
+				case 'string' :
+					if( o.hasOwnProperty(k='editContents') || o.hasOwnProperty(k='staticLabel') ) break;
+					if( o.hasOwnProperty('stringList') && o.hasOwnProperty(k='selectedIndex') )
+					{
+						for( i=(a=o.stringList).length ; i-- && (v != a[i]) ; );
+						if( 0 <= i ){ v=i; break; }
+					}
+					// no break;
+				default:
+					k = void 0;
+			}
+
+			return k && (t[k]=v);
+		},
+
+		CGLK : function changeListKey(/*str*/k,/*str|str[]*/a,  t,o,i,z,s)
+		//----------------------------------
+		// (Change-List-for-Key.) [ADD180319]
+		// [REM] this === Dialog instance.
+		// `a` :: list in the form "item1|item2...", or array of strings.
+		// ---
+		// => undefined [KO]  |  -1|0|... [OK]
+		{
+			if( !(t=callee.µ['~'].GETW(this,k)) ) return;
+
+			o = t.properties;
+			if( !o.hasOwnProperty('stringList') ) return;
+
+			i = o.hasOwnProperty('selectedIndex') ? o.selectedIndex : -1;
+			k = 0 <= i && (o=o.stringList) && o[i];
+
+			a instanceof Array || (a=String(a).split('|'));
+			for( z=a.length ; z-- ; (a[z]=s=__(a[z])) && k===s && (i=z) );
+
+			t.stringList = a;
+			
+			0 <= i && (t.selectedIndex=i=Math.min(i,a.length));
+			
+			return i;
+		},
+
+		CGUK : function changeUnitKey(/*str*/k,/*MeasurementUnit*/mu,  t,o,i,z,s)
+		//----------------------------------
+		// (Change-Unit-for-Key.) [ADD180323]
+		// [REM] this === Dialog instance.
+		// `mu` :: MeasurementUnit to be applied to the widget, supplied either
+		//         as a number (MU value), a MU key, or the Enumerator as such.
+		// E.g. <myDialog>.changeUnitKey('myUnitBox','AGATES')
+		// ---
+		// => undefined [KO]  |  mu [OK]
+		{
+			if( !(t=callee.µ['~'].GETW(this,k)) ) return;
+			
+			if( !(mu=$.global[callee.µ.__root__].isUnit(mu)) ) return;
+
+			o = t.properties;
+			if( !o.hasOwnProperty('editUnits') ) return;
+
+			t.editUnits = mu;
+			
+			return mu;
+		},
+
+	})
+
+	[PRIVATE]
+
+	({
+		// Minimal caption width (default.)
+		// ---
+		CAPW : 100,
+
+		MTCH : function(/*str*/wgClass,/*str*/propKey,  s)
+		//----------------------------------
+		// (Matcher.) Tell whether the class `wgClass` supports the prop `propKey`
+		// in the particular context of multi-case alias.
+		// => true [OK]  |  false [KO]
+		{
+			s = wgClass + '.' + propKey;
+			return ( 'RadiobuttonGroup.selectedButton' == s )
+				|| ( 'Dropdown.selectedIndex' == s )
+				;
+		},
+
+		XPPS : function(/*XMLList*/xAtts,/*str*/wgClass,  q,TP,x,k,t,v,i,CONV,vMin,vMax)
+		//----------------------------------
+		// (Property-Parser.) Given a list of XML attributes, return
+		// a volatile set of validated properties in their final form.
+		// E.g => { staticLabel:"My Label", checkedState:false }
+		// ---
+		// [CHG180508] Support multicase aliases.
+		// wgClass :: Widget class name -- e.g "Dropdown", "BorderPanel" etc
+		// ---
+		// [ADD180514] Measurement box case (MEBX|MCBX.)
+		// (A) `edit` (aka `editContents` -> S) is expected to provide
+		//     a *string*, so no special treatment is needed.
+		// (B) `value` (aka `editValue` -> N) expects a number, which
+		//     involves parsing the attribute as such. Note that "3p6"
+		//     shouldn't be valid in such context, since the client
+		//     must supply a well-formed, parseFloat-compliant numeral.
+		//     However, if SmartMeasurementBoxes is ON, the parsed number
+		//     is likely meant to express the magnitude *in editUnits*
+		//     (not in legacy points) in order to comply with the `get`
+		//     and `setValueKey` policy. The most consistant solution is
+		//     to pass the original attribute, as a string, straight to
+		//     `editContents` instead of `editValue`.
+		//     In addition, `min` and `max` (aka `minimumValue` and
+		//     `maximumValue`) are to be parsed in widget unit too. Here
+		//     we cannot use the `editContents` trick and a clean
+		//     converter is required.
+		// ---
+		// => {...}&
+		{
+			q = callee.Q;
+			for( k in q ) delete q[k];
+			
+			TP = callee.TYPE;
+			for each( x in xAtts )
+			{
+				// [FIX180514] Use String(x.name()) to avoid k being a QName obj.
+				// ---
+				if( !TP.hasOwnProperty(k=String(x.name())) ) continue;
+				
+				v = x.toString();
+				t = TP[k];
+
+				// Alias => refine (k,t)
+				// ---
+				while( '@' == t.charAt(0) )
+				{
+					k = t.substr(1);
+					i = k.indexOf(String.OR);
+					if( -1 == i ){ t=TP[k]; break; }
+
+					// [ADD180508] Multi-case alias.
+					// ---
+					t = k.split(RegExp.OR);
+					while( (k=t.pop()) && !(this.MTCH(wgClass,k)) );
+					t = k ? TP[k] : '';
+					break;
+				}
+
+				// [ADD180514] Measurement box case (MEBX|MCBX.)
+				// ---
+				if( callee.µ.SmartMeasurementBoxes && 'Value'==k.substr(-5) && 0===wgClass.indexOf("Measurement") )
+				{
+					switch( k )
+					{
+						case 'editValue' : q['editContents'] = v; break;
+
+						// [REM] Strings like "3p6" are not supported in a `...Value` context!
+						// We must wait for editUnits before processing any conversion.
+						// ---
+						case 'minimumValue' : CONV=1; vMin = parseFloat(v); break;
+						case 'maximumValue' : CONV=1; vMax = parseFloat(v); break;
+						default:;
+					}
+					
+					continue;
+				}
+
+				switch( t )
+				{
+					case 'Y' : v = __(v); break;
+					case 'B' : v = eval('Boolean('+v+')'); break;
+					case 'N' : v = parseFloat(v); break;
+					case 'I' : v = parseInt(v,10); break;
+					case 'L' : for( i=(v=v.split(RegExp.OR)).length ; i-- ; v[i]=__(v[i]) ); break;
+
+					// [ADD180514] editUnits item (MU or various implied forms, cf Env.isUnit.)
+					case 'U' :
+						(v=$.global[callee.µ.__root__].Env.isUnit(v)) || (k='');
+						break;
+
+					default: ;
+				}
+				
+				k && (q[k]=v);
+			}
+			
+			// Basic Unit Converter.
+			// ---
+			if( CONV )
+			{
+				CONV = $.global[callee.µ.__root__].toPoints;
+				t = q.editUnits;
+				'undefined' == typeof vMin || (q.minimumValue=CONV(vMin,t));
+				'undefined' == typeof vMax || (q.maximumValue=CONV(vMax,t));
+			}
+
+			return q;
+
+		}.setup({ Q:{}, TYPE:
+			{
+			checked:        '@checkedState',
+			checkedState:   'B',
+			caption:        '@staticLabel',
+			staticLabel:    'Y', // Yalt
+			edit:           '@editContents',
+			editContents:   'S',
+			value:          '@editValue',
+			editValue:      'N',
+			list:           '@stringList',
+			stringList:     'L',
+			min:            '@minimumValue',
+			minimumValue:   'N',
+			max:            '@maximumValue',
+			maximumValue:   'N',
+			small:          '@smallNudge',
+			smallNudge:     'N',
+			large:          '@largeNudge',
+			largeNudge:     'N',
+			// --- [ADD180513]
+			units:          '@editUnits',
+			editUnits:      'U',
+			// ---
+			minWidth:       'I',
+			selected:       '@selectedButton|selectedIndex',
+			selectedButton: 'I',
+			selectedIndex:  'I',
+			},
+		}),
+
+		WDGS : {
+			DCOL: '@DialogColumn',       DialogColumn:'dialogColumns',             // hosts:'Dialog|DROW|BPNL|EGRP'
+			DROW: '@DialogRow',          DialogRow:'dialogRows',                   // hosts:'DCOL'
+			BPNL: '@BorderPanel',        BorderPanel:'borderPanels',               // hosts:'DCOL|DROW|BPNL|EGRP'
+			EGRP: '@EnablingGroup',      EnablingGroup:'enablingGroups',           // hosts:'DCOL|DROW|BPNL|EGRP',  props:'checked'
+			// ---
+			RGRP: '@RadiobuttonGroup',   RadiobuttonGroup:'radiobuttonGroups',     // hosts:'DCOL|DROW|BPNL|EGRP',  props:'selectedButton'
+			RBTN: '@RadiobuttonControl', RadiobuttonControl:'radiobuttonControls', // hosts:'RGRP',                 props:'checked|caption'
+			// ---
+			STAT: '@StaticText',         StaticText:'staticTexts',                 // hosts:'DCOL|DROW|BPNL|EGRP',  props:'caption'
+			CBOX: '@CheckboxControl',    CheckboxControl:'checkboxControls',       // hosts:'DCOL|DROW|BPNL|EGRP',  props:'checked|caption'
+			DROP: '@Dropdown',           Dropdown:'dropdowns',                     // hosts:'DCOL|DROW|BPNL|EGRP',  props:'selectedIndex|list'
+			// ---
+			TEBX: '@TextEditbox',        TextEditbox:'textEditboxes',              // hosts:'DCOL|DROW|BPNL|EGRP',  props:'edit'
+			AEBX: '@AngleEditbox',       AngleEditbox:'angleEditboxes',            // hosts:'DCOL|DROW|BPNL|EGRP',  props:'edit|value|min|max|small|large'
+			IEBX: '@IntegerEditbox',     IntegerEditbox:'integerEditboxes',        // hosts:'DCOL|DROW|BPNL|EGRP',  props:'edit|value|min|max|small|large'
+			MEBX: '@MeasurementEditbox', MeasurementEditbox:'measurementEditboxes',// hosts:'DCOL|DROW|BPNL|EGRP',  props:'edit|value|min|max|small|large|units'
+			PEBX: '@PercentEditbox',     PercentEditbox:'percentEditboxes',        // hosts:'DCOL|DROW|BPNL|EGRP',  props:'edit|value|min|max|small|large',
+			REBX: '@RealEditbox',        RealEditbox:'realEditboxes',              // hosts:'DCOL|DROW|BPNL|EGRP',  props:'edit|value|min|max|small|large',
+			// ---
+			ACBX: '@AngleCombobox',      AngleCombobox:'angleComboboxes',          // hosts:'DCOL|DROW|BPNL|EGRP',  props:'edit|value|list|min|max|small|large'
+			ICBX: '@IntegerCombobox',    IntegerCombobox:'integerComboboxes',      // hosts:'DCOL|DROW|BPNL|EGRP',  props:'edit|value|list|min|max|small|large'
+			MCBX: '@MeasurementCombobox',MeasurementCombobox:'measurementComboboxes',// hosts:'DCOL|DROW|BPNL|EGRP',props:'edit|value|list|min|max|small|large|units'
+			PCBX: '@PercentCombobox',    PercentCombobox:'percentComboboxes',      // hosts:'DCOL|DROW|BPNL|EGRP',  props:'edit|value|list|min|max|small|large'
+			RCBX: '@RealCombobox',       RealCombobox:'realComboboxes',            // hosts:'DCOL|DROW|BPNL|EGRP',  props:'edit|value|list|min|max|small|large'
+		},
+
+		XDLG: function(/*XML*/x,/*Dom&*/host,  I,W,RE,wx,wk,k,skey,s,h,ed,mw,pp,t)
+		//----------------------------------
+		// (XML-Dialog.) Create a DOM dialog from a XML description
+		// based on WDGS shortcuts and property aliases.
+		// ---
+		// => undefined [OK]  |  Error [KO]
+		{
+			I = callee.µ['~'];
+			W = I.WDGS;
+			RE = callee.RE;
+			
+			// [ADD180512] Manage default minWidth
+			// ---
+			const CPW = callee.CAPTION_WIDTH; // may be zero
+			const EDW = callee.EDIT_WIDTH;    // may be zero
+			
+			for each( wx in x )
+			{
+				// [FIX180531] Use String(wx.name()) to avoid wk being a QName obj.
+				// => wk :: 'DCOL' | 'DialogColumn' | etc
+				// ---
+				if( !W.hasOwnProperty(wk=String(wx.name())) ) continue;
+				
+				// Alias?
+				// => wk :: 'DialogColumn' | 'DialogRow' | etc
+				// ---
+				'@' == (k=W[wk]).charAt(0) && (k=W[wk=k.substr(1)]);
+
+				// `key` property (if provided.)
+				// => skey :: 'someSettingsKey' | false
+				// ---
+				skey = wx.attribute('key').toString() || false;
+				
+				// Embed caption?
+				// [FIX180324] Check `.attribute(...).length()` + string.length
+				// [ADD180512] `ed` flag
+				// ---
+				h = host;
+				if( (ed=RE.test(wk)) && (s=wx.attribute('caption')).length() && (s=s.toString()).length )
+				{
+					// [CHG180319] Make auto-colon (:) a bit smarter.
+					// ---
+					s = __(s);
+					':' == s.charAt(-1+s.length) || (s=__("%1:",s));
+
+					h.hasOwnProperty('dialogRows') || (h=h.dialogColumns.add());
+					(h=h.dialogRows.add()).staticTexts.add({ staticLabel:s, minWidth:CPW||I.CAPW });
+				}
+
+				// Other properties.
+				// ---
+				pp = (t=wx.attributes()).length() ? I.XPPS(t,wk) : void 0;
+				
+				// Create the DOM widget.
+				// ---
+				if( !h.hasOwnProperty(k) )
+				{
+					$.global[callee.µ.__root__].error(__("%1 > %2 doesn't support the property '%3'.",callee.µ,h.constructor.name, k),callee);
+				}
+				else
+				{
+					// [ADD180512] Min width.
+					// ---
+					(t=ed?EDW:CPW) && !(pp && pp.hasOwnProperty('minWidth')) && ((pp||(pp={})).minWidth=t);
+					t = h[k].add(pp);
+					skey && (callee.LABEL += '\x02'+skey+'\x01'+t.id);
+				}
+				
+				wx.hasComplexContent() && callee(wx.children(),t);
+			}
+		}
+		.setup(
+		{
+			LABEL:'',
+			CAPTION_WIDTH: 0, // [ADD180512] Minimum caption with -- cf fromXML()
+			EDIT_WIDTH:    0, // [ADD180512] Minimum edit with    -- cf fromXML()
+			RE:/Dropdown|box$/,
+		}),
+
+	})
+
+	[PUBLIC]
+
+	({
+
+		// [ADD180515] This flag affects the getters and setters of measurement
+		// boxes (in particular `getValueKey `and `setValueKey`). See NOTICE.
+		// ---
+		SmartMeasurementBoxes : 1,
+		
+		onEngine: function onEngine_(  I,o)
+		//----------------------------------
+		// Augment Dialog.prototype so it supports various
+		// getters and setters based on µ['~'].
+		// [ADD180319] +changeListKey.
+		// [ADD180323] +changeUnitKey
+		// [ADD180508] +getStringKey
+		// [ADD180515] +getWidgetKey
+		{
+			I = callee.µ['~'];
+			o = Dialog.prototype;
+			
+			// Getters.
+			// ---
+			o.getWidgetKey = I.GTWK;
+			o.getValueKey = I.GTVK;
+			o.getStringKey = I.GTSK;
+
+			// Setters.
+			// ---
+			o.setValueKey = I.STVK;
+			o.changeListKey = I.CGLK;
+			o.changeUnitKey = I.CGUK;
+		},
+
+		fromXML: function fromXML_$XML$S_$Dialog$(/*xml|str*/x,  $$,I,dlg,t,s)
+		//----------------------------------
+		// Create a new Dialog object based on XML descriptor.
+		// The root element should be <Dialog>, it supports `name` and `canCancel` attributes.
+		// Children must be either regular DOM widget class names -- e.g <DialogColumn>,
+		// <BorderPanel>, <Dropdown>, <TextEditbox> etc -- or aliases defined in ~.WDGS
+		// like <DCOL>, <BPNL>, <DROP>, <TEBX> etc. Use attributes to specify properties.
+		// (Allowed attributes and aliases are defined in ~.XPPS.TYPES.)
+		// Containers can have XML children, e.g `<DCOL><CBOX /><TCBX /></DCOL>`.
+		// ---
+		// You can use a special attribute, `key`, to access widget values from the
+		// Dialog instance through getValueKey(k) and setValueKey(k,v).
+		// [ADD180512] Use the global attributes `captionWidth` and/or `editWidth`
+		// to set a default minWidth properties for labels and/or editable widgets.
+		// ---
+		// Full example:
+		// <Dialog name="My Dialog Title" canCancel="true" captionWidth="100" editWidth="150">
+		//   <DCOL>
+		//     <TEBX key="txInput" edit="Type your text here" />
+		//     <EGRP key="allowFeatures" checked="true">
+		//       <CBOX key="feat1" checked="false" caption="My Feature1" />
+		//     </EGRP>
+		//   </DCOL>
+		// </Dialog>
+		// ---
+		// => new Dialog
+		{
+			$$ = $.global[callee.µ.__root__]; // agnostic reference
+			
+			'string' == typeof x && (x=XML(x));
+
+			if( 'xml' != typeof x ) $$.error(__("Invalid argument (%1). Should be XML.",typeof x),callee);
+			
+			+$$.trace && $$.trace(__("%1 > Creating a new Dialog from XML description: %2.",callee.µ,$$.JSON(x)));
+			
+			dlg = app.dialogs.add({
+				canCancel: 'false' != x.attribute('canCancel').toString(),
+				name: x.attribute('name').toString(),
+				});
+
+			(I=callee.µ['~']).XDLG.LABEL='';
+
+			// [ADD180512] Manage default caption and edit widths:
+			// x.attribute('captionWidth') :: default minWidth property of labels
+			// x.attribute('editWidth')    :: default minWidth property of editable widgets
+			// ---
+			I.XDLG.CAPTION_WIDTH = ((t=x.attribute('captionWidth').toString())&&parseInt(t,10))||0;
+			I.XDLG.EDIT_WIDTH =    ((t=x.attribute('editWidth').toString())&&parseInt(t,10))||0;
+
+			I.XDLG(x,dlg);
+			(s=I.XDLG.LABEL) && (dlg.label=s);
+			
+			return dlg;
+		},
+
+	})

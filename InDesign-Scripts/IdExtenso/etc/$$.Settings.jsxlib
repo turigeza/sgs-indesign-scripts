@@ -1,0 +1,884 @@
+/*******************************************************************************
+
+		Name:           Settings
+		Desc:           Encapsulates a set of custom settings to be handled throughout a script.
+		Path:           /etc/$$.Settings.jsxlib
+		Require:        Dom/label ; $$.kill() $$.clone()
+		Encoding:       ÛȚF8
+		Core:           NO
+		Kind:           Module.
+		API:            =access() DontClone declare() hasScope() hasKey()
+		                canDeclare() activate() reset() backup()
+		                addLive() objKeyCount() appKeyCount()
+		DOM-access:     extractLabel() insertLabel()
+		Todo:           documentation.
+		Created:        150630 (YYMMDD)
+		Modified:       190523 (YYMMDD)
+
+*******************************************************************************/
+
+;$$.hasOwnProperty('Settings') || eval(__(MODULE, $$, 'Settings', 190523, 'access'))
+
+	//==========================================================================
+	// BACKGROUND
+	//==========================================================================
+
+	/*
+
+	PURPOSE
+
+	Managing settings and user preferences is an essential need in every solid
+	project. The present module takes this question seriously and offers a
+	consistent solution. It allows to declare the vital settings of your current
+	script, then it provides a complete save/restore/reset mechanism taking into
+	account the lifespan (here called the 'scope') of each setting.
+
+	You can deal with constant (read-only) parameters as well as with session-
+	persistent settings, or even long-term data stored in either the app or any
+	DOM object.
+
+	Settings are basically treated as key-value pairs. Your script can simply
+	declare a set `{ k1:v1, k2:v2, ... }`, each `k_i` being the KEY and each `v_i`
+	being the DEFAULT VALUE of that key. From then, these settings can be easily
+	shared, accessed, modified, throughout the script, using `$$.Settings` as a
+	unique provider in one place.
+
+	[REM] We choose to implement `$$.Settings` as a MODULE, not a CLASS, because
+	there is no point in having concurrent settings in the memory space of a
+	single script. (Only one script is running at a time!)
+
+	
+	STAGES
+	
+	The API of $$.Settings exposes four important methods that can be thought as
+	ordered 'stages' of interaction with the module. Below is just an overview of
+	these routines, whose syntax is detailed in the respective code blocks.
+	
+	1. DECLARATION STAGE -> declare()   [REQUIRED]
+
+	   The client script must, of course, tell `$$.Settings` which set of
+	   key-value pairs it is intended to manage. This is done through the
+	   Declaration stage using `$$.Settings.declare(...)`. This step
+	   must be achieved once-per-engine (typically in a `onEngine`
+	   handler) before performing any other API stage. The `declare` method
+	   expects an Unique ID and an Object that contains the whole set of
+	   parameters with their associated scopes.
+	
+	2. ACTIVATION STAGE  -> activate()  [REQUIRED]
+	   
+	   Each time your script runs or re-runs, it wants to ACTIVATE the settings
+	   with regard to their respective lifespan. Some have to be restored from
+	   their previous states, others need to wake up at their default value.
+	   This is the purpose of the ACTIVATION stage, which rawly corresponds to
+	   an `onLoad` step. Before activation, all settings are considered undefined.
+	
+	3. RESET STAGE       -> reset()     [OPTIONAL]
+	
+	   At any point of the client code, you may want to go back to the default
+	   settings. This is a RESET stage. Some options are available for
+	   fine-tuning this process. Resetting is technically very similar to
+	   activating, with additional instructions. Unlike the Activation stage,
+	   a Reset stage is typically the response to a user request.
+	
+	4. BACKUP STAGE      -> backup()    [OPTIONAL]
+	
+	   It is not *always* required to save the current settings, but of course
+	   this is very frequently what you expect. The Backup stage addresses this
+	   job, which by definition focuses on persistent data (see the SCOPE
+	   section below.) Make sure your script calls `$$.Settings.backup()` when
+	   needed. (If you skip it, data will activate to their previous state on
+	   the next execution of the script.)
+
+
+	SCOPES
+
+	You can assign a SCOPE to each setting, telling the system how, and how long,
+	a key is supposed to both remain in memory and be restored. When the user
+	re-runs the script, some settings need to be restored to their default value,
+	others need to recover their latest state (within the InDesign session), still
+	others have to fit a particular object that wasn't here before, and so on.
+
+	This module is based on my own practice with identifying recurring patterns
+	and requirements about script settings. Although it is probably not exhaustive,
+	it defines the following scopes and scenarios:
+
+	1. CONSTANTS. Pure read-only key-value associations, which the client code
+	cannot even change once declared. Useful for product name, version, user license
+	data, and the many fixed strings or numbers that the script must keep safe.
+	(Thanks to the `watch` method, the system prevents the key from being changed--
+	unless deeply hacked!)
+
+	2. LIVE KEYS. Purely 'volatile' parameters (never saved nor restored) just used
+	to share data across different places during a process. These are not 'settings'
+	in the usual sense; see them as on-the-fly params that belong to the Settings
+	space for convenience. Use case: the active document ID, or some current target,
+	must be known from separate modules to achieve some task. But you want to keep
+	them strongly decoupled, so passing the information as an argument bores you.
+	Instead, your functions will get the data, if available, from `$$.Settings`.
+
+	3. RESET KEYS. Keys that can freely evolve once activated (as the Live Keys),
+	but expected to *always* wake up at a specific value. Here, 'always' means,
+	"each time the script starts up." You can see Reset Keys as Live Keys coming
+	with an 'onLoad' handler that automatically resets them to a determined value.
+	This makes a difference in engine-persistent scripts, where Live Keys wake
+	up in an arbitrary state (depending of previous operations) while Reset Keys
+	are guaranteed to regain their default value.
+
+	4. ENGINE KEYS. These keys are aligned with the script engine. That is, they
+	will remember their latest value throughout the session in a persistent engine,
+	but they will reset to the default value if used in the `main` engine. Unlike
+	Live Keys, Engine Keys have a default value so they can be forcibly reset from
+	the client code. Unlike Reset Keys, Engine Keys do not automatically reset if
+	the engine is persistent. Engine Keys reflect the default scope, they typically
+	behave as data in your script engine, according to its particular lifecycle.
+
+	5. SESSION KEYS. Whatever the engine in use, these keys persist throughout
+	the whole InDesign session (unless forcibly reset, or unsaved.) Data are kept
+	as JSON strings in the system environment, so Session Keys use a very fast
+	backup/restore mechanism compared to DOM-based routines. Use cases: whenever
+	you need to keep track of 'what happened before' in the current InDesign
+	session, e.g, script runcount, tasks already performed, etc.
+
+	6. OBJECT-HOSTED KEYS (OBJ keys.) These special keys are intended to be saved
+	in an InDesign DOM object, if supplied. By default they activate to a default
+	value and behave as Engine Keys--so you can still manage default settings from
+	here when no DOM object is available. But, if $$.Settings is activated with
+	a DOM object passed in, then it becomes the actual data provider of Obj Keys.
+	The same object (or another one!) can then be used as the target during the
+	backup stage. Use case: your script build & manages highly data-driven docs and
+	needs to keep various metadata attached to each of them. When the user re-opens
+	such a document, the settings should reflect the specific data attached to it.
+
+	7. APPLICATION-HOSTED KEYS (APP keys.) These are the most persistent keys:
+	InDesign will remember them even in later sessions (after quit/restart.)
+	Technically, an APP Key can be thought as an OBJ Key with OBJ==InDesign. Its
+	typical use is of course addressing long-term user preferences. The script
+	should then offer a 'Go Back to Defaults' option, which can be done through
+	`$$.Settings.reset(null)`.
+
+	8. HYBRID KEYS. Mix of an OBJ Key and an APP Key. An Hybrid Key strongly
+	imitates the global vs. local paradigm used in InDesign preferences. If a
+	DOM object is present (typically, a `Document`) then the value is taken
+	from it, otherwise the application key is considered. For example, if your
+	script provides Swatch- or Style-related settings, you may want to manage
+	them in a global/local fashion, as InDesign does.
+
+	See the NOTICE for further detail.
+
+	*/
+
+	//==========================================================================
+	// NOTICE
+	//==========================================================================
+
+	/*
+
+	KEY SCOPES (SUMMARY)
+	
+	============================================================================
+	BRANCH   TYPE     DECL  ACTIVATE   RESET       BCKP   DESCRIPTION
+	============================================================================
+	CONST    CNST= 1  VAL   NOOP       NOOP        NOOP   Read-only.
+	----------------------------------------------------------------------------
+	LIVE     LIVE= 2  VAL   NOOP       NOOP        NOOP   Volatile (no default.)
+	----------------------------------------------------------------------------
+	RESET    RSET= 4  DEF   DEF        DEF         NOOP   Restorable but non-persistent.
+	----------------------------------------------------------------------------
+	[ENGINE] ENGI= 8  DEF   VAL?:DEF   DEF         NOOP   Engine-persistent (if present.)
+	                                                      This is the default scope.
+	----------------------------------------------------------------------------
+	SESSION  SESS=16  DEF   VAL        DEF         NOOP   Session-persistent
+	                                                      (even in main engine.)
+	----------------------------------------------------------------------------
+	OBJ      DOBJ=32  DEF   OBJ?:      null?DEF:   null?  DOM-Object-persistent.
+	                        VAL?:DEF   OBJ?:DEF    NOOP:
+	                                               OBJ?:
+	                                               NOOP
+	----------------------------------------------------------------------------
+	APP      INDD=64  DEF   APP?:      null?DEF:   null?  App-persistent.
+	                        VAL?:DEF   APP?:DEF    NOOP:
+	                                               APP
+	----------------------------------------------------------------------------
+	HYB      HYBR=96  DEF   OBJ?:      null?DEF:   null?  Hybrid.
+	                        APP?:      OBJ?:       NOOP:
+	                        VAL?:DEF   APP?:DEF    OBJ?:
+	                                               APP
+	----------------------------------------------------------------------------
+
+	*/
+
+	[PRIVATE]
+
+	({
+		// Scopes
+		// ---
+		CNST :  1,   // Constant key, can't be changed.
+		LIVE :  2,   // Live key, free to change, no default, volatile.
+		RSET :  4,   // Similar to live, but can be restored to its default.
+		ENGI :  8,   // Engine-persistent (if a non-main engine is in use.)
+		SESS : 16,   // Session-persistent (whatever the engine in use.)
+		DOBJ : 32,   // Object-persistent (if a DOM object is provided.)
+		INDD : 64,   // Application-persistent.
+		HYBR : 96,   // Hybrid scope (DOBJ or INDD)
+		
+		BRCH : function(/*key*/s)
+		//----------------------------------
+		// (Branch-Map.) Map a user-friendly branch name to a scope.
+		// => 0 [KO]  |  1|2|4|8|... [OK]
+		{
+			return (s=callee.Q[s]) ? this[s] : 0;
+		}.setup({ Q:
+			{
+			'CONST':   'CNST',  // The branch 'CONST' is not required, use `_MYCONSTANT` instead.
+			'LIVE':    'LIVE',
+			'RESET':   'RSET',
+			'ENGINE':  'ENGI',  // The branch 'ENGINE' is not required, that's the default scope.
+			'SESSION': 'SESS',
+			'OBJ':     'DOBJ',
+			'APP':     'INDD',
+			'HYB':     'HYBR',
+			},
+			// [180308] Added for extra parsing.
+			// ---
+			RE: /^CNST|LIVE|RSET|ENGI|SESS|DOBJ|INDD|HYBR$/,
+		}),
+
+		FDEL : function(/*obj&*/o,/*key*/k)
+		//----------------------------------
+		// (Deleter.) Kill and delete `o[k]`.
+		// this :: ~
+		// => o
+		{
+			$.global[callee.µ.__root__].kill(o[k]);
+			delete o[k];
+			return o;
+		},
+
+		FSET : function(/*obj&*/o,/*key*/k,/*any*/v)
+		//----------------------------------
+		// (Setter.) Kill `o[k]` first, then clone `v` in it.
+		// [CHG190523] Manage DontClone.
+		// this :: ~
+		// => o[k]
+		{
+			this.FDEL(o,k);
+			return ( o[k]=callee.µ.DontClone ? v : $.global[callee.µ.__root__].clone(v) );
+		},
+
+	})
+
+	[PRIVATE]
+	
+	({
+		// Settings-Unique-ID.
+		// ---
+		SUID : '',
+
+		// The keys and their present value.
+		// ---
+		KEYS : {},
+		
+		// Resettable mask. (Any scope that &-matches RSBL supports the reset feature.)
+		// ---
+		RSBL : (µ['~'].RSET)|(µ['~'].ENGI)|(µ['~'].SESS)|(µ['~'].DOBJ)|(µ['~'].INDD)|(µ['~'].HYBR),
+
+		KSCO : function(/*key*/k)
+		//----------------------------------
+		// (Key-Scope.) this :: ~
+		// => 0 [KO]  |  1|2|4|8|... [OK]
+		{
+			return callee.Q[k] || 0;
+		}.setup({ Q:{} }),
+
+		KDEF : function(/*key*/k)
+		//----------------------------------
+		// (Key-Default.) this :: ~
+		// => undefined [KO]  |  <any> [OK]
+		{
+			return callee.Q.hasOwnProperty(k) ? callee.Q[k] : (void 0);
+		}.setup({ Q:{} }),
+
+		WTCH : function(/*key*/k,/*?any*/ov,/*?any|NULL*/nv,  I)
+		//----------------------------------
+		// (Key-Watcher.) Use null to default.
+		// this :: ~.KEYS
+		{
+			return (I=callee.µ['~']),
+			(
+				( (I.CNST)&(I.KSCO(k)) ) ? ov :
+				(
+					null===nv ?
+					I.KDEF(k) :
+					[this.unwatch(k),I.FSET(this,k,nv),this.watch(k,callee)][1]
+				)
+			);
+		},
+
+	})
+
+	[PRIVATE]
+	
+	({
+		GOBJ : function(/*DOM*/osp,/*any*/defRet)
+		//----------------------------------
+		// (Get-From-Obj.) Get (extract) keys from osp's SUID label.
+		// => new set [OK] | undefined [KO]
+		{
+			return $.global[callee.µ.__root__].Dom.fromLabel(osp, this.SUID, defRet);
+		},
+
+		SOBJ : function(/*DOM*/osp,/*any{}*/o)
+		//----------------------------------
+		// (Set-to-Obj.) Set (insert) o keys into osp's SUID label.
+		// => str (json)
+		{
+			return $.global[callee.µ.__root__].Dom.toLabel(osp, this.SUID, o);
+		},
+
+		GAPP : function(/*any*/defRet)
+		//----------------------------------
+		// (Get-From-App.) Get keys from app's SUID label.
+		// => new set [OK] | undefined [KO]
+		{
+			return this.GOBJ(app,defRet);
+		},
+
+		SAPP : function(/*any{}*/o)
+		//----------------------------------
+		// (Set-to-App.) Set o keys into app SUID label.
+		// => str (json)
+		{
+			return this.SOBJ(app,o);
+		},
+
+		GENV : function(/*str*/k,  s)
+		//----------------------------------
+		// (Get-From-Env.) Get (extract) this key from the env-var `SUID_<k>`.
+		// => any value [OK] | null [KO]
+		{
+			return (s=$.getenv(this.SUID+'_'+k)) ? $.global[callee.µ.__root__].JSON.eval(s) : null;
+		},
+
+		SENV : function(/*str*/k,/*any*/x,  s)
+		//----------------------------------
+		// (Set-To-Env.) Set this key in the env-var `SUID_<k>`.
+		// => str (json)
+		{
+			$.setenv(this.SUID+'_'+k, s=$.global[callee.µ.__root__].JSON.lave(x));
+			return s;
+		},
+
+	})
+
+	[PRIVATE]
+	
+	({
+		ONUM : 0,
+		ANUM : 0,
+		MASK : 0, // Mask of all added scopes. [ADD180308]
+
+		DELK : function(  o,k)
+		//----------------------------------
+		// (Delete-Keys.) Unwatch and remove all existing keys.
+		// => undefined
+		{
+			o = this.KEYS;
+			for( k in o )
+			{
+				if( !o.hasOwnProperty(k) ) continue;
+				o.unwatch(k);
+				this.FDEL(o,k);
+				this.FDEL(this.KDEF.Q,k);
+				delete this.KSCO.Q[k];
+			}
+		},
+
+		ADDK : function(/*key*/k,/*uint*/scope,/*any*/data)
+		//----------------------------------
+		// (Add-Key.) Throws an error if the key `k` already exists.
+		// => undefined
+		{
+			if( this.KEYS.hasOwnProperty(k) )
+			{
+				$.global[callee.µ.__root__].error(__("The key '%1' is already declared.",k), callee);
+			}
+
+			this.KSCO.Q[k] = scope;
+			
+			if( scope == this.LIVE || scope == this.CNST )
+			{
+				this.FSET(this.KEYS, k, data);
+			}
+			else
+			{
+				this.FSET(this.KDEF.Q, k, data);
+				this.KEYS[k] = void 0; // undefined -> must be activated!
+			}
+			
+			this.MASK |= scope; // [ADD180308]
+		},
+
+		DECL : function(/*str*/suid,/*{...,LIVE:{},RESET:{},OBJ:{},APP:{},HYB:{}}*/o,  k,z,oo)
+		//----------------------------------
+		// (Declare-All-Settings.)
+		// [REM] Branch names are case-sensitive.
+		// => undefined
+		{
+			// Kills existing keys (if any.)
+			// ---
+			this.SUID && this.DELK();
+
+			// Set the 'Settings Unique ID.'
+			// ---
+			this.SUID = suid;
+			
+			// Reset the scope mask to zero.
+			// ---
+			this.MASK = 0;
+			
+			// Parse input and create keys from scratch.
+			// ---
+			for( k in o )
+			{
+				if( !o.hasOwnProperty(k) ) continue;
+				
+				if( !(z=this.BRCH(k)) )
+				{
+					// Implicit scope is determined as follows:
+					// I.CNST if key has the form '_xxx' ('_' is then removed),
+					// I.ENGI otherwise.
+					// ---
+					z = this['_' == k[0] ? 'CNST' : 'ENGI'];
+					this.ADDK(k.substr(1&z),z,o[k]);
+					continue;
+				}
+	
+				// Here o[k] is a z-scoped branch, and must be an object.
+				// ---
+				if( Object(oo=o[k])!==oo )
+				{
+					$.global[callee.µ.__root__].error(
+						__("The declaration of the branch '%1' is not valid. (Not an object.)", k),
+						callee );
+				}
+				
+				for( k in oo )
+				{
+					oo.hasOwnProperty(k) && this.ADDK(k, z, oo[k]);
+				}
+			}
+		},
+
+		ACRS : function(/*?DOM|null*/dom,/*bool*/DO_RESET,  o,k,z,v,indd,dobj,zo,za)
+		//----------------------------------
+		// (Activate-Or-Reset.) Activate or Reset the declared keys.
+		// => undefined
+		{
+			o = this.KEYS;
+			indd = dobj = false;
+			za = zo = 0;
+	
+			for( k in o )
+			{
+				if( !o.hasOwnProperty(k) ) continue;
+
+				z = this.KSCO(k);
+				v = null;
+
+				// If the key is resettable, determine its activation value.
+				// [REM] LIVE and CNST keys are excluded from this block.
+				// ---
+				while( z&this.RSBL )
+				{
+					// [ADD180221] Manage session key thru $.getenv(<SUID>_<KEY>)
+					// SESS
+					// ---
+					if( (z&this.SESS) && null!==(v=this.GENV(k)) ) break;
+
+					// DOBJ | INDD | HYBR
+					// If DO_RESET && dom===null, take the default and break.
+					// ---
+					if( (z&this.HYBR) && DO_RESET && null===dom ){ v=this.KDEF(k); break; }
+					
+					// DOBJ | HYBR
+					// ---
+					if( (z&this.DOBJ) )
+					{
+						// If not already done, unserialize data from the dom object.
+						// ---
+						dom && (false===dobj) && (dobj=this.GOBJ(dom, void 0));
+						
+						// Look for the key.
+						// [REM] If not found in a hybrid key, do not break!
+						// ---
+						if( dobj && dobj.hasOwnProperty(k) ){ ++zo; v=dobj[k]; break; }
+					}
+
+					// INDD | HYBR
+					// ---
+					if( (z&this.INDD) )
+					{
+						// If not already done, unserialize data from the app.
+						// ---
+						(false===indd) && (indd=this.GAPP(void 0));
+						
+						// Look for the key.
+						// ---
+						if( indd && indd.hasOwnProperty(k) ){ ++za; v=indd[k]; break; }
+					}
+
+					// RESET
+					// Take the default value in any of the following cases:
+					// (a) forced reset ; (b) RSET key ; (c) key undefined.
+					// ---
+					if( DO_RESET || (z&this.RSET) || ('undefined'==typeof this.KEYS[k]) )
+					{
+						v = this.KDEF(k);
+					}
+					break;
+				}
+
+				// Set or change the existing key into its activation value.
+				// ---
+				o.unwatch(k);
+				null===v || (this.FSET(o,k,v))
+				o.watch(k,this.WTCH);
+			}
+			
+			// Indicate whether OBJ and/or APP labels have been found during activation,
+			// and how many properties have been restored from each.
+			// ---
+			this.ONUM = zo;
+			dobj && $.global[callee.µ.__root__].kill(dobj);
+
+			this.ANUM = za;
+			indd && $.global[callee.µ.__root__].kill(indd);
+		},
+
+		BCKP : function(/*?DOM|null*/dom,  indd,dobj,SKIP_HYB,zo,za,o,k,z)
+		//----------------------------------
+		// (Backup.)
+		// => undefined
+		{
+			indd = this.GAPP({});                // Get the existing app keys, or {}, in a new obj
+			dobj = dom && this.GOBJ(dom,{}),   // Get the existing obj keys, or {}, in a new obj
+	
+			SKIP_HYB = +(null===dom);
+
+			zo = za = 0;
+	
+			o = this.KEYS;
+			for( k in o )
+			{
+				if( !o.hasOwnProperty(k) ) continue;
+				
+				z = this.KSCO(k);
+	
+				// SESS
+				// ---
+				if( z&this.SESS )
+				{
+					this.SENV(k,o[k]);
+					continue;
+				}
+	
+				// OBJ | HYB
+				// ---
+				if( z&this.DOBJ )
+				{
+					if( SKIP_HYB ) continue;
+					if( dom ){ ++zo; dobj[k]=o[k]; continue; }
+				}
+	
+				// APP | HYB
+				// ---
+				if( z&this.INDD )
+				{
+					++za;
+					indd[k]=o[k];
+				}
+			}
+	
+			zo && this.SOBJ(dom,dobj);
+			$.global[callee.µ.__root__].kill(dobj);
+			
+			za && this.SAPP(indd);
+			$.global[callee.µ.__root__].kill(indd);
+		},
+	})
+
+	//==========================================================================
+	// API
+	//==========================================================================
+
+	[PUBLIC]
+	
+	({
+		// [ADD190523] Usually it's safer to let `$$.Settings` perform a JSON clone
+		// while setting a key to an object reference (`ss.myKey=myObj`), because
+		// that reference may be lost and ss.myKey is supposed to work anyway.
+		// But in specific cases you may want to explicitly prevent the module from
+		// cloning objects during script execution, either for performance purposes
+		// or for bypassing cloning limitations on complex objects (augmented arrays,
+		// etc) Then you can set `$$.Settings.DontClone` to 1.
+		// ---
+		DontClone: 0,
+		
+		declare : function declare_S_Õ_(/*str*/suid,/*{...,LIVE:{},RESET:{},SESSION:{},OBJ:{},APP:{},HYB:{}}*/oInput,  $$,I)
+		//----------------------------------
+		// Create a set of keys from scratch and register their default values. This function must be
+		// called *once* per engine, and before `activate()`. It does not restore nor enable any key.
+		// Recommended usage:  $$.Settings.canDeclare() && $$.Settings.declare(...);
+		// ---
+		// suid   :: Settings unique ID (string.)
+		// oInput :: Set of keys with their default values, e.g { myString:"foobar", myNumber:123, ... }
+		//           By default, keys are ENGINE-scoped, meaning they keep their latest value as long as
+		//           the engine is active. Keys declared with underscore prefix (`_`) are made constant,
+		//           so they cannot be changed even using `ss.MYKEY = newValue`. (Note: the `_` prefix
+		//           is automatically removed from the key name.) To declare additional scopes, use any
+		//           of the following branch: LIVE, RESET, SESSION, OBJ, APP, HYB. For example,
+		//           { mySimpleKey:"foobar", _MYCONST:3.14, SESSION: { mySessionKey:321 } }
+		// ---
+		// [REM] You can explicitly use the branches CONST and ENGINE.
+		// [REM] An error is thrown if a key name is re-used or anything else
+		// goes wrong during the declaration.
+		// ---
+		// Full oInput example:
+		//    {
+		//    _PROGNAME: "MyProgram",            // Contant key named PROGNAME; its value cannot be changed.
+		//    indexMode: "auto",                 // Engine-persistent. The latest value remains as long as
+		//                                       // this engine is alive--assuming you don't call reset().
+		//                                       // REM: Will work as RESET if no persistent engine is active.
+		//    LIVE:      { tempValue: "test" },  // Non-persistent and no reset. Can be changed at wish; useful
+		//                                       // to pass dynamic data among the settings while perfoming a task.
+		//    RESET:     { jobDone: false },     // Non-persistent with auto-reset. This key automatically recovers
+		//                                       // its init value *each time you activate* the settings (including
+		//                                       // in the context of a persistent engine.)
+		//    SESSION:   { runCount: 0 },        // Session-persistent (whatever the engine in use.) Useful to keep
+		//                                       // data across multiple runs in basic scripts avoiding #targetengine.
+		//                                       // REM: Will work as ENGINE if a persistent engine is active.
+		//    OBJ:       { modified: 180221 },   // Stored in a DOM-Object (Document, PageItem, etc.). This key can
+		//                                       // be stored in (and restored from) a DOM object, if supplied.
+		//                                       // (See activate, backup and reset for more detail.)
+		//    APP:       { version: 2.321 },     // Application-persistent. This key is stored/restored at the
+		//                                       // application level, which makes it persistent as long as the
+		//                                       // user do not trash InDesign preferences.
+		//                                       // (See activate, backup and reset for more detail.)
+		//    HYB:       { prefSize: [15,10] },  // Object or Application-persistent. This (hybrid) key is stored
+		//                                       // and restored either at object or application level, depending
+		//                                       // on which argument is supplied to the API. If a DOM object is
+		//                                       // provided, it works as OBJ; otherwise it works as APP. Useful
+		//                                       // to manage preferences that can be superseded by some object.
+		//                                       // (See activate, backup and reset for more detail.)
+		//    }
+		// ---
+		// => undefined
+		{
+			$$ = $.global[callee.µ.__root__]; // agnostic reference
+			
+			if( (I=callee.µ['~']).SUID )
+			{
+				$$.error( __("Settings already declared. Use %1.canDeclare() to check.",callee.µ), callee )
+			}
+
+			if( ('string' != typeof suid) || suid.length < 1 )
+			{
+				$$.error( __("Empty UID is not allowed."), callee )
+			}
+
+			if( oInput !== Object(oInput) )
+			{
+				$$.error( __("Invalid object in settings declaration."), callee )
+			}
+
+			(+$$.trace) && $$.trace(__("%1 > Declaring settings for uid: %2.",callee.µ,suid.toSource()));
+
+			I.DECL(String(suid), oInput);
+		},
+		
+		canDeclare : function canDeclare_B(  I)
+		//----------------------------------
+		// Whether declare() can be invoked.
+		// => 0 [NO]  |  1 [YES]
+		{
+			return (I=callee.µ['~']).SUID ? 0 : 1;
+		},
+		
+		hasScope : function hasScope_IS_I(/*uint|str*/scope,  I,t)
+		//----------------------------------
+		// [ADD180309] Whether the declared settings contain (at least)
+		// one key associated to the supplied scope(s).
+		// CNST: 1 ; LIVE: 2 ; RSET: 4 ; ENGI: 8 ; SESS:16
+		// DOBJ:32 ; INDD:64 ; HYBR:96
+		// As an uint, `scope` can be a OR of mixed values.
+		// => >0 [OK]  |  0 [KO]
+		{
+			if( !(I=callee.µ['~']).SUID )
+			{
+				$.global[callee.µ.__root__].error( __("Settings must be declared before calling hasScope."), callee );
+			}
+
+			if( 'number' != typeof (t=scope) )
+			{
+				scope = String(scope).toUpperCase();
+				
+				// ---
+				// [TODO] Might be improved to support "s1|s2|s3..."
+				// ---
+
+				t = I.BRCH(scope) || (I.hasOwnProperty(scope) && I.BRCH.RE.test(scope) && I[scope]);
+			}
+			
+			if( !t )
+			{
+				$.global[callee.µ.__root__].error( __("The scope %1 is not recognized.",scope), callee );
+			}
+
+			return t&I.MASK;
+		},
+
+		hasKey : function hasKey_K_I(/*key*/k,  I,t)
+		//----------------------------------
+		// [ADD180318] Whether the declared settings contain a key `k`.
+		// If so, returns the associated scope (>0.)
+		// CNST: 1 ; LIVE: 2 ; RSET: 4 ; ENGI: 8 ; SESS:16
+		// DOBJ:32 ; INDD:64 ; HYBR:96
+		// => >0 [OK]  |  0 [KO]
+		{
+			if( !(I=callee.µ['~']).SUID )
+			{
+				$.global[callee.µ.__root__].error( __("Settings must be declared before calling hasScope."), callee );
+			}
+
+			return I.KEYS.hasOwnProperty(k) ? I.KSCO(k) : 0;
+		},
+
+		activate : function activate_d_Õ(/*?DOM*/dom,  $$,I,s)
+		//----------------------------------
+		// Restore each key to its most relevant value based on its scope.
+		// If dom is a DOM object, use it as a source for any OBJ or HYB key.
+		// If dom is not provided or 'falsy,' OBJ keys will behave at default
+		// scope and HYB keys will behave at APP scope.
+		// => keys-accessor
+		{
+			$$ = $.global[callee.µ.__root__]; // agnostic reference
+
+			if( !(s=(I=callee.µ['~']).SUID) )
+			{
+				$$.error( __("Settings must be declared before activation."), callee );
+			}
+
+			(+$$.trace) && $$.trace(__("%1 > Activating uid: %2. Host: %3.",callee.µ,s.toSource(),String(dom)));
+
+			I.ACRS(dom, false);
+			return I.KEYS;
+		},
+
+		reset : function reset_d$null$_Õ(/*?DOM|null*/dom,  $$,I,s)
+		//----------------------------------
+		// Reset each key to its default or stored value, based on its scope.
+		// ---
+		// If dom is a DOM object or is not provided (undefined), every OBJ,
+		// APP and HYB key is activated the usual way, while all other
+		// keys are reset to their default value.
+		// ---
+		// If dom===NULL, then all keys are reset to their default, including
+		// OBJ, APP and HYB keys.
+		// => keys-accessor
+		{
+			$$ = $.global[callee.µ.__root__]; // agnostic reference
+
+			if( !(s=(I=callee.µ['~']).SUID) )
+			{
+				$$.error( __("Settings must be declared before calling reset."), callee )
+			}
+
+			(+$$.trace) && $$.trace(__("%1 > Resetting uid: %2. Host: %3.",callee.µ,s.toSource(),String(dom)));
+
+			I.ACRS(dom, true);
+			return I.KEYS;
+		},
+
+		backup : function backup_d$null$_(/*?DOM|null*/dom,  $$,I,s)
+		//----------------------------------
+		// Backup the current values of label-stored keys.
+		// If dom is a DOM object, use it as a target for any I_OBJ or I_HYB key.
+		// If dom is undefined, backup I_HYB and I_APP keys in app.
+		// If dom is NULL, only backup strict I_APP keys (ignoring I_HYB.)
+		// [CHG180605] Prevents undo.
+		// [CHG190206] JsxBlind safe.
+		// => undefined
+		{
+			$$ = $.global[callee.µ.__root__]; // agnostic reference
+
+			if( !(s=(I=callee.µ['~']).SUID) )
+			{
+				$$.error( __("Settings must be declared before calling backup."), callee )
+			}
+
+			(+$$.trace) && $$.trace(__("%1 > Saving uid: %2. Host: %3.",callee.µ,s.toSource(),String(dom)));
+
+			// [CHG180605] Calling doScript/autoUndo prevents the backup stage from being undone.
+			// [CHG190206] JsxBlind safe.
+			// ---
+			callee.ARG = dom;
+			app.doScript("I.BCKP(callee.ARG)", +ScriptLanguage.javascript, void 0, +UndoModes.autoUndo);
+			delete callee.ARG;
+		},
+
+		addLive : function addLive_Õ_Õ(/*any{}*/oLiveKeys,  I,k)
+		//----------------------------------
+		// Add LIVE keys to the existing keys.
+		// [REM] CANNOT BE USED WHILE NO ACTIVATION IS DONE
+		// => keys-accessor
+		{
+			if( !(I=callee.µ['~']).SUID )
+			{
+				$.global[callee.µ.__root__].error( __("Settings must be declared before calling addLive."), callee )
+			}
+
+			// New LIVE keys
+			// ---
+			for( k in oLiveKeys )
+			{
+				if( !oLiveKeys.hasOwnProperty(k) ) continue;
+				I.ADDK(k,I.LIVE,oLiveKeys[k]);
+				I.KEYS.watch(k,I.WTCH);
+			}
+	
+			return I.KEYS;
+		},
+
+
+		objKeyCount : function objKeyCount_I()
+		//----------------------------------
+		// => Number of OBJ label key retrieved during activation.
+		{
+			return callee.µ['~'].ONUM;
+		},
+	
+		appKeyCount : function appKeyCount_I()
+		//----------------------------------
+		// => Number of APP label key retrieved during activation.
+		{
+			return callee.µ['~'].ANUM;
+		},
+
+		access : function access_k_ÕX(/*str*/k,  I)
+		//----------------------------------
+		// [ADD180309] `k` argument added: direct key access.
+		// => keys-accessor
+		{
+			if( !(I=callee.µ['~']).SUID )
+			{
+				$.global[callee.µ.__root__].error( __("Settings must be declared before calling access."), callee )
+			}
+
+			if( !I.KEYS.__count__ )
+			{
+				$.global[callee.µ.__root__].warn( __("%1 > No key available yet in the accessor.",callee.µ) );
+			}
+			
+			return 'undefined'==typeof k ? I.KEYS : I.KEYS[k];
+		},
+	})

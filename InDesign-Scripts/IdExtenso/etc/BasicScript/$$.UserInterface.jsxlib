@@ -1,0 +1,188 @@
+/*******************************************************************************
+
+		Name:           UserInterface
+		Desc:           The abstract UI of a Basic Script.
+		Path:           /etc/BasicScript/$$.UserInterface.jsxlib
+		Require:        $$.BasicScript
+		Encoding:       ÛȚF8
+		Core:           NO
+		Kind:           Child module of $$.BasicScript
+		API:            SmartListItemGetter
+		        Hooks:  ?beforeShow() ?onClose()
+		DOM-access:     YES
+		Todo:           ---
+		Created:        180307 (YYMMDD)
+		Modified:       190331 (YYMMDD)
+
+*******************************************************************************/
+
+;if( !$$.BasicScript ){ alert(__("%1 requires the %2 module.",'UserInterface','BasicScript')); exit(); }
+;$$.BasicScript.hasOwnProperty('UserInterface') || eval(__(MODULE, $$.BasicScript.toSource(), 'UserInterface', 190331))
+
+	//==========================================================================
+	// HOOKS
+	//==========================================================================
+
+	/*
+
+	beforeShow : function beforeShow(DOMDialog, settings, runMode)
+	----------------------------------------------------------------------------
+	`DOMDialog`:: DOM Dialog instance.
+	`settings` :: Settings accessor.
+	`runMode`  :: Script run flag (signed integer.)
+	=> undefined
+	----------------------------------------------------------------------------
+	Called once settings have been automatically populated into the SUI dialog
+	through linked keys. Implement this function to preprocess, before showing
+	the dialog, existing or additional settings.
+
+
+	onClose : function onClose(ok, DOMDialog, settings, runMode)
+	----------------------------------------------------------------------------
+	`ok`       :: (bool) Whether the user has validated the dialog.
+	`DOMDialog`:: DOM Dialog instance.
+	`settings` :: Settings accessor.
+	`runMode`  :: Script run flag (signed integer.)
+	=> any [CONTINUE]  |  true [SKIP-SERVER]  |  false [STOP]
+	----------------------------------------------------------------------------
+	Called once the SUI dialog is closed and its values have been automatically
+	populated into Settings through linked keys. Implement this function to
+	normalize existing or additional settings. This function may return `true`
+	to skip the Server while allowing backup. In most cases, `ok===false` should
+	lead to return false, telling BasicScript to stop the process.
+
+	*/
+
+	[PRIVATE]
+	
+	({
+		_SD_ : function(/*{ssKey=>prefix}*/o,/*settings*/ss,/*Dialog&*/dlg,  k,p,v)
+		//----------------------------------
+		// (Settings-to-Dialog-Keys.) Update Dialog keys from settings.
+		// => undefined
+		{
+			if( !(o.__count__) ) return;
+
+			for( k in o )
+			{
+				if( !o.hasOwnProperty(k) ) continue;
+
+				p = o[k]||'';                 // Special prefix, or empty.
+				v = ss[k];                    // Raw ss value.
+
+				// UI keys with `%` prefix must be treated as 100*v,
+				// where the ss key `v` is the *real* value. If your
+				// ss key handles the percentage value as such, do not
+				// use the `%` prefix on it: values already match!
+				// ---
+				'%'==p && (v*=100);
+
+				// UI keys with `µ` prefix do not require special
+				// treatment at this point. Indeed, we assume that both
+				// ui and ss handles POINT units behind the scene.
+				// So far, `µ` is therefore a "transparent prefix."
+				// ---
+				// 'µ'==p && (v);
+
+				dlg.setValueKey( p+k, v );
+			}
+		},
+
+		_DS_ : function(/*{ssKey=>prefix}*/o,/*Dialog*/dlg,/*settings&*/ss,  k,p,v)
+		//----------------------------------
+		// (Dialog-to-Settings-Keys.) Update settings from Dialog keys.
+		// => undefined
+		{
+			if( !(o.__count__) ) return;
+			
+			// [ADD180515] Manages smart list strings.
+			// ---
+			const SLIG = callee.µ.SmartListItemGetter;
+
+			for( k in o )
+			{
+				if( !o.hasOwnProperty(k) ) continue;
+
+				p = o[k]||'';                  // Special prefix, or empty
+				
+				v = SLIG && 'string'==typeof ss[k] && 'Dropdown'==(dlg.getWidgetKey(p+k)||0).__class__ ?
+					dlg.getStringKey( p+k ) :  // List item as a string.
+					dlg.getValueKey ( p+k );   // Raw ui value.
+
+				// UI keys with `%` prefix must be understood as returning
+				// 100*ss[k], so ss[k] has to be set to v/100. If your
+				// ss key handles the percentage value as such, do not use
+				// the `%` prefix on it: values already match!
+				// ---
+				'%'==p && (v/=100);
+
+				// UI keys with `µ` prefix do not require special
+				// treatment at this point. Indeed, we assume that both
+				// ui and ss handles POINT units behind the scene.
+				// So far, `µ` is therefore a "transparent prefix."
+				// ---
+				// 'µ'==p && (v);
+
+				ss[k] = v;
+			}
+		},
+
+		_GO_: function(/*int*/runMode,/*ParentModule*/PM,  $$,µ,uiCache,dlg,ss,r)
+		//----------------------------------
+		// (Go.) Show the dialog (if any) with applied settings ; call the
+		// `beforeShow` and `onClose` hooks if available.
+		// ---
+		// [REM] Althoug 'private,' this function is called from the parent
+		// module in a way that waives the usual rules. The reason is, we
+		// want to keep it as secure as possible while opening the PUBLIC
+		// area to the client code.
+		// ---
+		// => any [CONTINUE]  |  true [SKIP-SERVER]   |  false [STOP]
+		{
+			$$ = $.global[callee.µ.__root__]; // agnostic reference
+			µ = callee.µ;
+
+			// Check that the dialog exists.
+			// ---
+			uiCache = PM['~'].DIAL; // { DXML:xml|false, SPEC:str|false, PRFX:'%', KEYS:{ss-Key=>prefix|''} }
+			(dlg=uiCache.SPEC) && ( (dlg=resolve(dlg)).isValid || (dlg=false) );
+			if( !dlg ) return;
+			
+			// ss -> dlg keys.
+			// ---
+			ss = $$.Settings();
+			this._SD_(uiCache.KEYS, ss, dlg);
+
+			// `beforeShow` hook.
+			// ---
+			'function' == typeof µ.beforeShow && µ.beforeShow(dlg,ss,runMode);
+			
+			// Show the dialog.
+			// ( If not canceled, dlg -> ss keys. )
+			// ---
+			(r=dlg.show()) && this._DS_(uiCache.KEYS, dlg, ss);
+			
+			// onClose hook?
+			// ---
+			return 'function' == typeof µ.onClose ?
+				µ.onClose(r,dlg,ss,runMode) :
+				// [FIX190317] Not supposed to return true.
+				( r ? void 0 : false );
+		},
+	})
+
+	[PUBLIC]
+	
+	({
+		// [ADD180515] Improves the *getter* of key-based dropdowns.
+		// By default, the current item is returned *by index* (its
+		// index in the stringList.) If the flag SmartListItemGetter
+		// is ON, any settings key that has been declared as a *string*
+		// will be returned as the corresponding string in the list.
+		// See ~._DS_ for detail.
+		// [REM] This flag does not affect the setter (~._SD_) since
+		// `dlg.setValueKey` is smart enough to route, either a number
+		// to a list index, or a string to a list item.
+		// ---
+		SmartListItemGetter : 0,
+	})

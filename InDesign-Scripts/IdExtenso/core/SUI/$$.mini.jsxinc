@@ -1,0 +1,286 @@
+/*******************************************************************************
+
+		Name:           mini
+		Desc:           Minimal ScriptUI extension.
+		Path:           /core/SUI/$$.mini.jsxinc
+		Require:        $$.Env
+		Encoding:       ÛȚF8
+		Core:           YES
+		Kind:           Snippet (part of /SUI.)
+		API:            ScriptUI alignments (LT, RT, etc)
+		                ScriptUI.isWidget() .getIndex()
+		                ScriptUI.forceRedraw() .setFocus()
+		DOM-access:     NO
+		Todo:           More tests on setFocus()/Mac
+		Created:        170427 (YYMMDD)
+		Modified:       210105 (YYMMDD)
+
+*******************************************************************************/
+
+	//==========================================================================
+	// BACKGROUND
+	//==========================================================================
+
+	/*
+
+	[CHG190120] Old path: /core/Ext/$$.scriptui.jsxinc
+
+	This snippet loads a few static extensions in the native ScriptUI object. It's
+	just a minimal set of features used in basic UI routines shared across the
+	framework. It essentially provides alignment shortcuts (`LT` for 'left-top',
+	etc) and the `builder()` method which makes easier to manage ScriptUI resources.
+	
+	As the code below consumes very little space it is integrated with the `core`
+	directory even if your script does not invoke ScriptUI. A much richer set of
+	additional UI features is to be provided in a separate `etc` branch.
+	
+	*/
+
+	//==========================================================================
+	// Combined Alignments (ScriptUI.FT, ScriptUI.LT, etc.)
+	// [FIX180528] Use strings instead of numbers (SUI bug.)
+	//==========================================================================
+
+	/*
+
+	In ScriptUI, alignment options (`alignment` and `alignChildren`
+	properties) support the array form [<horizAlign>, <vertAlign>]. This
+	makes sense in controlling the overall strategy of a container having
+	subcontainers. Thus, we often need to pass arguments such as
+	['left','top'] or ['fill','center'], which creates temporary arrays that
+	could be avoided using static data structures. This is done by
+	globally declaring ScriptUI.LT, .FC, and so on.
+	
+	[REM] Alignment options do not seem to work if the target widget has
+	no custom `preferredSize` when the layout is processed. For Group or
+	Panel instances that need alignment into their container, it is reco-
+	mmended to set both `preferredSize` and `maximalSize` properties.
+	
+	*/
+
+	;ScriptUI.setup
+	({
+		LT : ['left',   'top'],
+		RT : ['right',  'top'],
+		FT : ['fill',   'top'],
+		CT : ['center', 'top'],
+		// ---
+		LB : ['left',   'bottom'],
+		RB : ['right',  'bottom'],
+		FB : ['fill',   'bottom'],
+		CB : ['center', 'bottom'],
+		// ---
+		LC : ['left',   'center'],
+		RC : ['right',  'center'],
+		FC : ['fill',   'center'],
+		CC : ['center', 'center'],
+		// --- [ADD180528]
+		LF : ['left',   'fill'],
+		RF : ['right',  'fill'],
+		FF : ['fill',   'fill'],
+		CF : ['center', 'fill'],
+	});
+
+	//==========================================================================
+	// ScriptUI.isWidget() .getIndex()
+	//==========================================================================
+
+	ScriptUI.isWidget = function isWidget(/*any*/x)
+	//----------------------------------
+	// [180528] Tell whether x is a ScriptUI control or widget (incl. Window.)
+	// x's class name must mach the `name` property in callee.MAP.
+	// => true [OK]  |  false [KO]
+	{
+		return x && (x=x.__class__) ? x===(callee.MAP[x.toLowerCase()]||0).name : false;
+	}
+	.setup({ MAP:
+	{
+		// --- Containers
+		'window':       { abbr:'W' , name:'Window'      },
+		'group':        { abbr:'G' , name:'Group'       },
+		'panel':        { abbr:'P' , name:'Panel'       },
+		// --- Texts
+		'statictext':   { abbr:'S' , name:'StaticText'  },
+		'edittext':     { abbr:'E' , name:'EditText'    },
+		// --- Buttons
+		'button':       { abbr:'B' , name:'Button'      },
+		'iconbutton':   { abbr:'I' , name:'IconButton'  },
+		'checkbox':     { abbr:'C' , name:'Checkbox'    },
+		'radiobutton':  { abbr:'R' , name:'RadioButton' },
+		// --- Image (container)
+		'image':        { abbr:'i' , name:'Image'       },
+		// --- Lists
+		'listbox':      { abbr:'L' , name:'ListBox'     },
+		'dropdownlist': { abbr:'D' , name:'DropDownList'},
+		'treeview':     { abbr:'T' , name:'TreeView'    },
+		// --- List item
+		'listitem':     { abbr:'l' , name:'ListItem'    },
+		// --- Bars
+		'scrollbar':    { abbr:'b' , name:'Scrollbar'   },
+		'slider':       { abbr:'s' , name:'Slider'      },
+		'progressbar':  { abbr:'p' , name:'Progressbar' },
+		// --- Tabs
+		'tabbedpanel':  { abbr:'X',  name:'TabbedPanel' },
+		'tab':          { abbr:'x',  name:'Tab'         },
+		// --- FlashPlayer (deprecated)
+		'flashplayer':  { abbr:'F',  name:'FlashPlayer' },
+	}});
+
+	ScriptUI.getIndex = function getIndex(/*any*/x,  a,i)
+	//----------------------------------
+	// [180825] Return the index of x in its parent.children array.
+	// => uint [OK]  |  -1 [KO]
+	{
+		a = ScriptUI.isWidget(x) && !(x instanceof Window) && (x.parent||0).children;
+		if( !a ) return -1;
+		for( i=a.length||0 ; i-- && x!==a[i] ; );
+		return i;
+	},
+
+	//==========================================================================
+	// [181218] ScriptUI.forceRedraw()
+	// [190127] Rewritten; better type checking ; list case.
+	//==========================================================================
+	
+	ScriptUI.forceRedraw = function(/*Widget*/wg,  a,t)
+	//----------------------------------
+	// Force a widget to redraw. The purpose of this routine is to
+	// force the widget to invoke its associated `onDraw` handler, if
+	// defined, which cannot be done by direct call. Use the code
+	// `ScriptUI.forceRedraw(myWidget)` when you need an already drawn
+	// widget to call again its `onDraw` handler. If no handler is available
+	// this function has in principle no visible effect.
+	// ---
+	// [REM] Since forceRedraw is based on a trick that temporarily hits
+	// the size of the widget, it may initiate a `resize` event on containers.
+	// This does not involve the layout manager though.
+	// ---
+	// [REM210105] ListItem instances (in listboxes or dropdownlists) may have
+	// an `image` property but it remains an open problem to *update* such
+	// image. Indeed the property seems read-only (CS/CC) as soon as it has
+	// been set. Of course `forceRedraw` cannot bypass that particular issue.
+	// ---
+	// => 1 [OK]  |  0 [KO]
+	{
+		// Checkpoint.
+		// ---
+		if( !(t=wg&&wg.type) ) return 0;
+
+		// [190127] Special case for ListBox and DropDownList
+		// [190217] Introducing specialized methods.
+		// ---
+		switch( t )
+		{
+			case 'listbox' :      return callee.LBOX(wg) || callee.LIST(wg);
+			case 'dropdownlist' : return callee.LIST(wg);
+			default:;
+		}
+		
+		// In CC we have to assign a *distinct* size, then reset.
+		// In CS we only have to re-assign the size as such.
+		// ---
+		if( !(a=wg.size) ) return 0;
+		t = callee.DT;
+		wg.size = [t+a[0],t+a[1]];
+		t && (wg.size=[a[0],a[1]]);
+		
+		return 1;
+	}
+	.setup
+	({
+		DT: $$.inCC ? 1 : 0,
+
+		LBOX: function(/*ListBox*/wg,  o,a,i,t)
+		//----------------------------------
+		// [190217] ListBox redraw.
+		{
+			if( !((o=wg.columns)&&(a=o.preferredWidths)) ) return 0;
+			for( i=a.length ; i-- && !((t=a[i]) && (o.preferredWidths[i]=1+t) && (o.preferredWidths[i]=t)) ; );
+			if( 0 <= i ) return 1;
+			if( (o=wg.properties) && (o=o.columnWidths) && (t=o[0]) )
+			{
+				wg.columns.preferredWidths[0] = t;
+				wg.columns.preferredWidths[0] = void 0;
+				return 1;
+			}
+			return 0;
+		},
+
+		LIST: function(/*DropDownList|ListBox*/wg,  t)
+		//----------------------------------
+		// [190217] Any list redraw (fallback.)
+		{
+			if( !((t=wg.itemSize)&&(t=t[1])) ) return 0;
+			wg.itemSize[1] = 1+t;
+			wg.itemSize[1] = t;
+			return 1;
+		},
+	});
+
+	//==========================================================================
+	// [190124] ScriptUI.setFocus()
+	// [190308] Improved ; new type of returned value.
+	//==========================================================================
+
+	ScriptUI.setFocus = function setFocus(/*Widget*/wg,  w,t)
+	//----------------------------------
+	// Forcibly set the focus on `wg`, if possible.
+	// - Returns 0 if no focus change could be achieved due to either
+	//   invalid, disabled, or hidden `wg` input.
+	// - Otherwise, returns the control which is finally active: usually
+	//   `wg` itself, or one of its children. The Window instance is
+	//   returned in case the focus has changed *but* no activable
+	//   control has been found in wg's scope.
+	// [REM] In many circumstances the command `wg.active=true` doesn't
+	// work as expected, in particular if `wg` is already registered as
+	// active although not having the focus. The trick used here is to
+	// create and activate a temporary control outside wg's area, then
+	// remove it.
+	// [FIX190225] Fixed OK return.
+	// [CHG190308] Group and Panel objects don't provide the `active`
+	// property natively, which makes it difficult to implicity activate
+	// the main or the first control within a `wg` container. To bypass
+	// this limitation we have removed the ('active' in wg) condition ;
+	// instead, a generic algorithm deals with containers that don't own
+	// an `active` property. Note that you can still declare, set and
+	// watch the `active` key for advanced components that provide a
+	// specific activation strategy in response to `me.active = true`.
+	// ---
+	// => Widget [OK-ACTIVE-WIDGET]  |  0 [KO]
+	{
+		w = ScriptUI.isWidget(wg) && wg.enabled && wg.visible && wg.window;
+		if( !w ) return 0;
+
+		(t=w.add('edittext')).active = true;
+
+		// [CHG190307] Added ACTIVE_CHILD algo.
+		// ---
+		wg.hasOwnProperty('active')
+		? ( wg.active = true )
+		: ( wg = callee.ACTIVE_CHILD(wg)||w );
+
+		w.remove(t);
+		return wg;
+	}
+	.setup
+	({
+		ACTIVE_CHILD: function(/*Container*/wg,  a,re,n,i,c)
+		//----------------------------------
+		// [190308] Recursive child-focusing algo.
+		// [REM] The input MUST be a container in the state
+		// enabled AND visible AND not-activable.
+		// => Widget [OK-ACTIVE]  |  0 [KO]
+		{
+			if( !(a=wg.children) ) return 0;
+			for( re=callee.RE_EXCL_TYPES, n=a.length||0, i=-1 ; ++i < n ; )
+			{
+				c = a[i];
+				if( (!c.enabled) || (!c.visible) || (re.test(c.type)) ) continue;
+				if( c.hasOwnProperty('active') ){ c.active = true; return c; }
+				if( c=callee(c) ) return c;
+			}
+			return 0;
+		}
+		.setup({ RE_EXCL_TYPES: /^(?:progressbar|scrollbar|slider|statictext)$/i }),
+	});
+

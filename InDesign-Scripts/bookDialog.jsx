@@ -5,15 +5,15 @@
                 baseFilePath = settings["baseFilePath"];
             }
        }
-   
+
        if(!checkFolders()){
             return;
         }
-    
-        var respond = loadJson(websiteUrl+'/events/guidebookdata/get_districts/');
-        var districts = respond.data;    
+
+        var respond = loadJson('/events/guidebookdata/get_districts/');
+        var districts = respond.data;
         var years = generateSelectableYears();
-    
+
         var win = new Window("dialog");
         win.orientation = "column";
         win.add("staticText", undefined, "Choose the year.");
@@ -28,16 +28,16 @@
         win.confirm.onClick = function() {
             win.close(1);
             }
-        
+
         win.cancel.onClick = function() { win.close(0); }
         var rs = win.show();
         if(rs){
               if(action == 'book_listing'){
-                  generateGuidebookListings(win); 
+                  generateGuidebookListings(win);
               }else if(action == 'district_cover'){
-                  generateGuidebookListingsCoverPage(win); 
+                  generateGuidebookListingsCoverPage(win);
               }else if(action == 'leaflet'){
-                  generateLeaflets(win); 
+                  generateLeaflets(win);
               }else if(action == 'listing_index'){
                   generateIndexPages(win);
               }

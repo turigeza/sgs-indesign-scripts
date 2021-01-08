@@ -1,0 +1,93 @@
+/*******************************************************************************
+
+		Name:           Ext
+		Desc:           External features, including temporary features.
+		Path:           /core/$$.Ext.jsxinc
+		Require:        ---
+		Encoding:       ÛȚF8
+		Core:           YES
+		Kind:           Snippet (global scope)
+		API:            Object.prototype.setup()
+		                String.prototype.toSource()
+		                [[global]].parseInt()
+		                etc
+		DOM-access:     ---
+		Todo:           ---
+		Created:        160731 (YYMMDD)
+		Modified:       201127 (YYMMDD)
+
+*******************************************************************************/
+
+	//==========================================================================
+	// BACKGROUND
+	//==========================================================================
+
+	/*
+
+	All snippets included here belong to the `/core/Ext/` directory. They load
+	important features outside of the `$$` object. In principle, those external
+	bricks are needed for IdExtenso to properly work. Do not rewrite or alter
+	this file without caution. Note also that order matters in the following
+	`#include` directives, as some methods (e.g `Object.prototype.setup`) may
+	be invoked at include time.
+	
+	[ADD201127] Added $$.math.jsxinc
+	[CHG190120] ScriptUI stuff is included from a distinct snippet: SUI.jsxinc
+
+	*/
+
+
+	// Add $.summary.diff() feature.
+	// ---
+	#include 'Ext/$$.summary.jsxinc'
+
+	// Temporarily extends Object.prototype.
+	// ---
+	#include 'Ext/$$.object.jsxinc'
+
+	// Escape sequences and special characters
+	// statically defined in both RegExp and String.
+	// ---
+	#include 'Ext/$$.patterns.jsxinc'
+
+	// Improve RegExp class (static patterns) and proto:
+	// => flags() ; toSource() ; ==()
+	// ---
+	#include 'Ext/$$.regexp.jsxinc'
+
+	// Redefine String.prototype.toSource, append
+	// asPath and toPath methods, and more...
+	// ---
+	#include 'Ext/$$.string.jsxinc'
+
+	// [181117] Fix [[global]] functions.
+	// ---
+	#include 'Ext/$$.global.jsxinc'
+
+	// Redefine Number.prototype.toSource.
+	// ---
+	#include 'Ext/$$.number.jsxinc'
+
+	// [201127] Patch `Math.min`, `Math.max` if needed.
+	// ---
+	#include 'Ext/$$.math.jsxinc'
+
+	// Add Enumeration & Enumerator features,
+	// in particular repair .toSource() in CS5+.
+	// ---
+	#include 'Ext/$$.enum.jsxinc'
+
+	// Add static features to Date.
+	// ---
+	#include 'Ext/$$.date.jsxinc'
+
+	// Temporarily extends Function.prototype.
+	// ---
+	#include 'Ext/$$.function.jsxinc'
+
+	// Extends File.prototype. [171203]
+	// ---
+	#include 'Ext/$$.file.jsxinc'
+
+	// [DEL190120] Removed ScriptUI static properties
+	// from here, included later from /SUI.

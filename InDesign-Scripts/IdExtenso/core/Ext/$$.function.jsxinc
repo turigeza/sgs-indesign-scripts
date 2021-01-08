@@ -1,0 +1,278 @@
+/*******************************************************************************
+
+		Name:           function
+		Desc:           Temporarily extends Function features.
+		Path:           /core/Ext/$$.function.jsxinc
+		Require:        ---
+		Encoding:       ÛȚF8
+		Core:           YES
+		Kind:           Part of /Ext
+		API:            copy() self() send()
+		                [PRIVATE]() [PUBLIC]() [PARENT]() [PROTO]()
+		DOM-access:     NO
+		Todo:           ---
+		Created:        170322 (YYMMDD)
+		Modified:       181128 (YYMMDD)
+
+*******************************************************************************/
+
+	//==========================================================================
+	// NOTICE
+	//==========================================================================
+
+	/*
+
+	A special name, $TMP$, is assigned to temporary functions used only at include-
+	time. They are automatically deleted at load-time.
+
+	*/
+
+	//==========================================================================
+	// Function.prototype.copy() self() send()
+	//==========================================================================
+
+	Function.prototype.copy = function $TMP$(/*str*/newPath)
+	//----------------------------------
+	// Prepare the copy of this function reference to make it callable, as
+	// an alias, from another location. The string `newPath` specifies
+	// the destination path. Any valid function path is allowed, either
+	// absolute, or relative to the current module.
+	// If `newPath` ends with a dot '.' or a slash '/', then the current
+	// function key will be used for the alias as well. If newPath is empty,
+	// then '/' ie [[global]] is considered the target location.
+	// [REM]  Path resolution is deferred to Function.prototype[PUBLIC].
+	// [WARN] This method does not deal with copying `this` in the
+	//        `prototype` object of a CLASS.
+	// ---
+	// Examples:   myFuncKey: function myFuncName(){...}.copy('..')
+	//             -> copy the func in `parentModule.myFuncKey`
+	//             myFuncKey: function myFuncName(){...}.copy('/test')
+	//             -> copy the func in `[[global]].test`
+	// ---
+	// => this
+	{
+		newPath || (newPath='/');
+		'.' == newPath.substr(-1) && (newPath+='/');
+
+		this.__copy__ = newPath;
+		return this;
+	};
+
+	Function.prototype.self = function $TMP$(/*obj|null*/cx,/*any...*/_1,_2,_3,_4,_5,_6,_7,_8,_9)
+	//----------------------------------
+	// Invoke this function from the `cx` context, passing optional
+	// extra arguments --this.call(cx,args...)-- then return this.
+	// This utility allows to invoke a function that has just been
+	// defined, including from a specific context, while going back
+	// to its own reference.
+	// Example:  `myFunc.self()
+	// [REM] If `this` is designed to return something, `this.self()`
+	// won't take care of such output as it always return `this` itself.
+	// ---
+	// [CHG181128] Added up to 9 args.
+	// ---
+	// => this
+	{
+		return this.call(cx, _1,_2,_3,_4,_5,_6,_7,_8,_9), this;
+	};
+
+	Function.prototype.send = function $TMP$(/*obj*/cx,/*str*/meth,/*any...*/_1,_2,_3,_4,_5,_6,_7,_8,_9)
+	//----------------------------------
+	// Invoke `cx[meth](this, <args>)` using the `this` function as first
+	// argument, plus optional extra args, then return the `this` function
+	// itself. This utility allows to temporarily switch to a different
+	// context and method taking `this` as a target.
+	// Example: `myFunc.send(myModule,"feedFuncCache",myData).etc()`
+	// ---
+	// [CHG181128] Added up to 9 extra args.
+	// [REM] It is the responsability of the client code to assert that
+	// `cx[meth]` is a function.
+	// ---
+	// => this
+	{
+		return cx[meth](this, _1,_2,_3,_4,_5,_6,_7,_8,_9), this;
+	};
+
+	//==========================================================================
+	// Function.prototype.PRIVATE() PUBLIC() PARENT() PROTO()
+	//==========================================================================
+
+	Function.prototype[PRIVATE] = function $TMP$(/*obj*/o,  I,s,k)
+	//----------------------------------
+	// <this> :: current module or class.
+	// Temporarily provide a generic [PRIVATE] utility to any module
+	// or class, for registering private members in this['~'].
+	// [REM] Autodeleted once the framework has been loaded.
+	// ---
+	// => this
+	{
+		I = this['~'];
+		s = this.__path__ + '~/';
+		for( k in o )
+		{
+			if( !o.hasOwnProperty(k) ) continue;
+			if( 'function' == typeof o[k] )
+			{
+				o[k].setup
+				({
+					__path__: s + k,    // eg '/$$/Env/~/FKEY'
+					µ: this,            // So every private method can use callee.µ.
+				});
+			}
+			I[k] = o[k];
+		}
+		return this;
+	};
+
+	Function.prototype[PUBLIC] = function $TMP$(/*obj*/o,/*bool=0*/inProto,  path,target,mods,ptp,k,s,t,p,oo)
+	//----------------------------------
+	// <this> :: current module or class ; alias: [STATIC]
+	// Temporarily provide a generic [PUBLIC] --or [STATIC]-- utility
+	// to any module or class, for registering public members in this.
+	// ---
+	// [FIX171110] Changed the way inProto functions register their path.
+	// We no longer set the key `<modPath>/prototype/` in __mods__. Instead,
+	// __mods__[modPath] both supports `funcKey` and `prototype/funcKey`.
+	// [CHG170503] Added the `inProto` param. This method is used by [PROTO].
+	// ---
+	// => this
+	{
+		// [171110] Here `path` will always refer to the current module.
+		// E.g '/$$/Env/' ; '/$$/BigInt/'
+		// ---
+		path = this.__path__;
+
+		// Make sure this module path is registered
+		// in IdExtenso's private __mods__.
+		// ---
+		mods = $.global[this.__root__]['~'].__mods__;
+		mods.hasOwnProperty(path) || (mods[path]={});
+
+		// [FIX171110] ptp :: '' | 'prototype/'
+		// ---
+		target = inProto ? this.prototype : this;
+		ptp = inProto ? 'prototype/' : '';
+
+		for( k in o )
+		{
+			if( !o.hasOwnProperty(k) ) continue;
+
+			target[k] = o[k];
+
+			if( 'function' != typeof o[k] ) continue;
+			
+			// ---
+			// o[k] is a function.
+			// ---
+			
+			o[k].setup
+			({
+				// E.g '/$$/Env/idVersion'
+				//     '/$$/BigInt/prototype/create'
+				__path__: path + ptp + k,
+
+				// Every public method (incl. prototyped) can use callee.µ
+				µ: this,
+			});
+			
+			// [FIX171110] The set `mods[modPath]` now supports keys having
+			// either the form `funcKey` OR `prototype/funcKey`.
+			// ---
+			// MODULE: mods['/$$/Env/']['idVersion'] = 'idVersion_ns_b_SB'
+			// CLASS:  mods['/$$/BigInt/']['prototype/create'] = 'create_X_iô_ô_'
+			// ---
+			mods[path][ptp+k] = o[k].name;
+			
+			// Copy manager.
+			// ---
+			if( !o[k].hasOwnProperty('__copy__') ) continue;
+			
+			p = o[k].__copy__;
+			
+			if( '/'==p.substr(-1) )
+			{
+				// If p ends with a slash, the path is fine and s==k,
+				// that is, alias-key == original-key (eg 'idVersion'.)
+				// ---
+				s = k;
+			}
+			else
+			{
+				// Otherwise, extract the key from the copy path `p`.
+				// => s :: alias-key
+				// => p :: remaining path xxx/.../OtherModule/
+				// ---
+				t = p.lastIndexOf('/');
+				s = p.substr(1+t);
+				p = p.substr(0,1+t);
+			}
+
+			// Resolve p from the current location.
+			// ---
+			// If `inProto`, we allow the client to specify the path
+			// either relative to the module or to its inner proto.
+			// In either case the dest location must be a module.
+			// ---
+			p = (inProto && (path+ptp).toPath(p)) || path.toPath(p);
+
+			if( (!p) || !(oo=mods[p]) || oo.hasOwnProperty(s) )
+			{
+				t = __("\rThe path %1 is invalid from %2.",(p+s).toSource(), o[k].__path__);
+				t+= __(" Make sure your argument is correct while calling copy(%1).", o[k].__copy__.toSource());
+				t+= oo ?
+					__(" The alias %1 should be free in %2.", s.toSource(), p) :
+					__(" The path should refer to a valid module.");
+				throw Error(t);
+			}
+			
+			// p :: '/$$/.../OtherModule/'
+			// s :: 'doActionAlias'
+			// => $.global['$$'][...]['OtherModule']['doActionAlias'] = o[k]
+			// ---
+			t = $.global[this.__root__].resolve(p);
+			t[s] = o[k];
+
+			// => mods['/$$/.../OtherModule/']['doActionAlias']='/$$/.../CurModule/doAction'
+			// [REM] Any `mods[modPath][name]` that starts with '/' indicates an alias and
+			// refers to its destination path (which might address a /prototype area.)
+			// ---
+			oo[s] = path + ptp + k;
+			
+			// Rewrite the resolved __copy__ path.
+			// ---
+			o[k].__copy__ = p + s;
+		}
+
+		return this;
+	};
+
+	Function.prototype[PARENT] = function $TMP$(/*obj*/o,  parent)
+	//----------------------------------
+	// <this> :: current module or class.
+	// Temporarily provide a generic [PARENT] utility to any module or
+	// class for registering PUBLIC members in its *parent*. That's
+	// somehow a shortcut of this.<parent>[PUBLIC](o), returning this.
+	// [REM] Autodeleted once the framework has been loaded.
+	// ---
+	// => this (current module or class)
+	{
+		// this.__path__ :: /$$/SomeModule/SubModule/  =>  $.global['$$']['SomeModule']
+		// this.__path__ :: /$$/ => $.global
+		// ---
+		parent = $.global[this.__root__].resolve((this.__path__).toPath('../'));
+		parent[PUBLIC](o);
+
+		return this;
+	};
+
+	Function.prototype[PROTO] = function $TMP$(/*obj*/o)
+	//----------------------------------
+	// <this> :: current class.
+	// Temporarily provide a generic [PROTO] utility to any class
+	// for registering members in its `prototype` object.
+	// That's a shortcut of this[PUBLIC](o,/*inProto*/1), returning this.
+	// ---
+	// => this (current class)
+	{
+		return this[PUBLIC](o,1), this;
+	};

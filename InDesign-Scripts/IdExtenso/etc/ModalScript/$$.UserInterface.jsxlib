@@ -1,0 +1,184 @@
+/*******************************************************************************
+
+		Name:           UserInterface
+		Desc:           The abstract UI of a Modal Script.
+		Path:           /etc/ModalScript/$$.UserInterface.jsxlib
+		Require:        $$.ModalScript
+		Encoding:       ÛȚF8
+		Core:           NO
+		Kind:           Child module of $$.ModalScript
+		API:            SmartListItemGetter CancelValue
+		        Hooks:  ?beforeShow() ?onClose()
+		DOM-access:     YES
+		Todo:           ---
+		Created:        180601 (YYMMDD)
+		Modified:       200127 (YYMMDD)
+
+*******************************************************************************/
+
+;if( !$$.ModalScript ){ alert(__("%1 requires the %2 module.",'UserInterface','ModalScript')); exit(); }
+;$$.ModalScript.hasOwnProperty('UserInterface') || eval(__(MODULE, $$.ModalScript.toSource(), 'UserInterface', 200127))
+
+	//==========================================================================
+	// HOOKS
+	//==========================================================================
+
+	/*
+
+	beforeShow : function beforeShow(SUIDialog, settings, runMode)
+	----------------------------------------------------------------------------
+	`SUIDialog`:: ScriptUI-based dialog (Window instance.)
+	`settings` :: Settings accessor.
+	`runMode`  :: Script run flag (signed integer.)
+	=> undefined
+	----------------------------------------------------------------------------
+	Called once settings have been automatically populated into the SUI dialog
+	through linked keys. Implement this function to preprocess, before showing
+	the dialog, existing or additional settings.
+
+
+	onClose : function onClose(ok, SUIDialog, settings, runMode)
+	----------------------------------------------------------------------------
+	`ok`       :: (false|uint) Returned value of the dialog; `false` if canceled.
+	`SUIDialog`:: ScriptUI-based dialog (Window instance.)
+	`settings` :: Settings accessor.
+	`runMode`  :: Script run flag (signed integer.)
+	=> any [CONTINUE]  |  true [SKIP-SERVER]  |  false [STOP]
+	----------------------------------------------------------------------------
+	Called once the SUI dialog is closed and its values have been automatically
+	populated into Settings through linked keys. Implement this function to
+	normalize existing or additional settings. This function may return `true`
+	to skip the Server while allowing backup.
+	(a) If `ok===false`, the user has canceled the dialog. (In most cases you
+	    should then return false to tell ModalScript to stop the process.)
+	    This reflects the fact that `dlg.show` has returned `µ.Cancelvalue`.
+	(b) If `ok!==false`, it then reflects the value returned from `dlg.show()`,
+	    usually 1 (associated to `dlg.defaultElement` or the 'ok' button), but
+	    you can manage here any specific returned value.
+
+	*/
+
+	[PRIVATE]
+	
+	({
+		_SD_ : function(/*key[]*/a,/*settings*/ss,/*SUIWindow&*/dlg,  i,k)
+		//----------------------------------
+		// (Settings-to-Dialog-Keys.) Update Dialog keys from settings.
+		// => undefined
+		{
+			for( i=a.length ; i-- ; (k=a[i]), dlg.setValueKey(k,ss[k]) );
+		},
+
+		_DS_ : function(/*key[]*/a,/*SUIWindow*/dlg,/*settings&*/ss,  i,k,v,CHG)
+		//----------------------------------
+		// (Dialog-to-Settings-Keys.) Update settings from Dialog keys.
+		// [ADD190317] Added `getString` test.
+		// [ADD200127] Returns a Change flag (might be used in some hacks...)
+		// => true [SOME CHANGE]  |  false [NO CHANGE]
+		{
+			// Manages smart list strings.
+			// ---
+			const SLIG = callee.µ.SmartListItemGetter;
+
+			for( CHG=false, i=a.length ; i-- ; )
+			{
+				k = a[i];
+				v = SLIG && 'string'==typeof ss[k] && ((dlg[k]||0).hasOwnProperty('items') || 'function'==typeof (dlg[k]||0).getString) ?
+					dlg.getStringKey( k ) :  // List item as a string.
+					dlg.getValueKey ( k );   // Raw ui value.
+
+				CHG || (CHG=ss[k]!=v);       // [ADD200127]
+				ss[k] = v;
+			}
+			
+			return CHG;
+		},
+
+		_GO_: function(/*int*/runMode,/*ParentModule*/PM,  $$,µ,ss,dlg,q,k,pfx,r)
+		//----------------------------------
+		// (Go.) Build and show the dialog (if any) with applied settings ;
+		// call the `beforeShow` and `onClose` hooks if available.
+		// ---
+		// [REM] Althoug 'private,' this function is called from the parent
+		// module in a way that waives the usual rules. The reason is, we
+		// want to keep it as secure as possible while opening the PUBLIC
+		// area to the client code.
+		// ---
+		// => any [CONTINUE]  |  true [SKIP-SERVER]   |  false [STOP]
+		{
+			$$ = $.global[callee.µ.__root__]; // agnostic reference
+			µ = callee.µ;
+			ss = $$.Settings();
+
+			// Get and check the SUI resource obj.
+			// [REM] ~._UI_() must be implemented by the client code.
+			// ---
+			dlg = 'function' == typeof this._UI_ && this._UI_(ss);
+
+			if( !dlg )
+			{
+				$$.warn(__("%1 > Invalid _UI_ method.", µ));
+				return;
+			}
+			if( 'dialog' != (dlg.properties||0).type )
+			{
+				$$.warn(__("%1 > Invalid ScriptUI Resource Object.", µ));
+				return;
+			}
+
+			// Build the dialog.
+			// ---
+			dlg = ScriptUI.builder.call(this,dlg);
+
+			// Register ss keys found in dlg.
+			// ---
+			(q=callee.Q||(callee.Q=[])).length = 0;
+			for( k in ss ) ss.hasOwnProperty(k) && dlg.hasOwnProperty(k) && (q[q.length]=k);
+
+			// ss -> dlg keys.
+			// ---
+			this._SD_(q, ss, dlg);
+
+			// `beforeShow` hook.
+			// ---
+			'function' == typeof µ.beforeShow && µ.beforeShow(dlg,ss,runMode);
+			
+			// Show the dialog.
+			// ( If not canceled, dlg -> ss keys. )
+			// [FIX190317] Supports µ.CancelValue (default:2.)
+			// ---
+			µ.CancelValue===(r=dlg.show()) && (r=false);
+			false!==r && this._DS_(q, dlg, ss);
+
+			// onClose hook?
+			// ---
+			return 'function' == typeof µ.onClose ?
+				µ.onClose(r,dlg,ss,runMode) :
+				r;
+		},
+
+	})
+	
+	[PUBLIC]
+	
+	({
+		// Improves the *getter* of key-based list widgets.
+		// By default, the current item is returned *by index* (its
+		// index in the list.) If the flag SmartListItemGetter is ON,
+		// any settings key that has been declared as a *string*
+		// will be returned as the corresponding string in the list.
+		// See ~._DS_ for detail.
+		// [REM] This flag does not affect the setter (~._SD_) since
+		// `dlg.setValueKey` is smart enough to route, either a number
+		// to a list index, or a string to a list item.
+		// ---
+		SmartListItemGetter : 0,
+		
+		// [ADD190317] By default, the `show` method of a SUI Dialog
+		// returns 2 when the user presses the [Esc] key or clicks
+		// the `cancelElement`. On rare occasions you may need to
+		// change that number: `µ.CancelValue` (uint) must reflect
+		// the cancel value as returned from dlg.show().
+		// ---
+		CancelValue : 2,
+	})

@@ -1,0 +1,596 @@
+/*******************************************************************************
+
+		Name:           File
+		Desc:           File and Folder related routines.
+		Path:           /core/$$.File.jsxlib
+		Require:        ---
+		Encoding:       ÛȚF8
+		Core:           YES
+		Kind:           Module.
+		API:            =toFile() readBinary() writeBinary()
+		                readUTF8() writeUTF8() appendUTF8()
+		                readUTF16() writeUTF16() appendUTF16()
+		                batchToString()
+		                macLineFeed() winLineFeed() unixLineFeed()
+		                temp() stamp()
+		DOM-access:     NO
+		Todo:           BOM or not-BOM? ; MAC bash scripting
+		Created:        160130 (YYMMDD)
+		Modified:       180307 (YYMMDD)
+
+*******************************************************************************/
+
+;eval(__(MODULE, $$, 'File', 180307, 'toFile'))
+
+	//==========================================================================
+	// BACKGROUND
+	//==========================================================================
+
+	/*
+
+	Binary encoding. - A special encoder, BINARY, is provided for binary
+	I/O. This encoder simply extends every 8-bit character it finds to a
+	Unicode character between 0 and 255. When using this encoder to write
+	binary files, the encoder writes the lower 8 bits of the Unicode
+	character. For example, to write the Unicode character 1000, which is
+	0x3E8, the encoder actually writes the character 232 (0xE8).
+
+
+	BOM. - The data of some of the common file formats (UCS2, UCS4, UTF8,
+	UTF16) starts with a special byte order mark (BOM) character (U+FEFF).
+	The File.open method reads a few bytes of a file looking for this
+	character. If it is found, the corresponding encoding is set
+	automatically and the character is skipped. If there is no BOM
+	character at the beginning of the file, open() reads the first 2 KB of
+	the file and checks whether the data might be valid UTF-8 encoded
+	data, and if so, sets the encoding to UTF-8.
+
+	When using UTF-8 encoding or 16-bit Unicode, always write the BOM
+	character "\uFEFF" as the first character of the file.
+
+	To write 16-bit Unicode files in UTF-16 format, use the encoding UCS-2.
+	This encoding uses whatever byteorder format the host platform
+	supports.
+
+	Built-in encodings are:
+	      BINARY
+	      ASCII==US-ASCII==ISO646-US==ISO-646.IRV:1991==ISO-IR-6
+	      UTF8==UTF-8==UNICODE-1-1-UTF-8==UNICODE-2-0-UTF-8==X-UNICODE-2-0-UTF-8
+	      // ---
+	      UTF16==UTF-16==ISO-10646-UTF-16
+	      UTF16LE==UTF-16LE==ISO-10646-UTF-16LE
+	      UTF16BE==UTF-16BE==ISO-10646-UTF-16BE
+	      // ---
+	      UCS2==UCS-2==ISO-10646-UCS-2
+	      UCS2LE==UCS-2LE==ISO-10646-UCS-2LE
+	      UCS2BE==UCS-2BE==ISO-10646-UCS-2BE
+	      // ---
+	      UCS4==UCS-4==ISO-10646-UCS-4
+	      UCS4LE==UCS-4LE==ISO-10646-UCS-4LE
+	      UCS4BE==UCS-4BE==ISO-10646-UCS-4BE
+	      // ---
+	      ANSI-X3.4-1968==CP367==IBM367==US==ISO646.1991-IRV
+	      CP1252==WINDOWS-1252==MS-ANSI
+	      ISO-8859-1==ISO-8859-1==ISO-8859-1:1987==ISO-IR-100==LATIN1
+	      MACINTOSH==X-MAC-ROMAN
+
+	The ASCII encoder raises errors for characters greater than 127, and
+	the BINARY encoder simply converts between bytes and Unicode
+	characters by using the lower 8 bits. The latter encoder is convenient
+	for reading and writing binary data.
+	
+	
+	File and Folder `execute` method. - Should be considered equivalent
+	to Right-Click + Open from the user perspective. In particular,
+	`File.execute()` is not deterministic since we don't know which
+	application might be associated to the file suffix. On Mac OS .log
+	files are usually associated to the console. In both systems .txt
+	files are usually associated to any text editor available. JS and
+	ExtendScript files (.js, .jsx) might be opened by any Adobe app,
+	or custom EDI.
+	
+	When `myFile.execute()` doesn't work, it *should* return false but
+	this is not the case on all platforms. For example, Windows10 opens
+	a window that allows the user to select an application and then
+	ExtendScript pretends `execute()` to be true. However, it is still
+	recommended to detect any `false` return and provide our own
+	fallback mechanism -- e.g `myFile.parent.execute()`.
+
+	File Creation. - To create a File object, use the File method or the
+	new operator. The constructor accepts full or partial path names, and
+	returns the new object. The CRLF sequence for the file is preset to
+	the system default, and the encoding is preset to the default system
+	encoding.
+	
+	      File(path);      // May return a Folder object   (!)
+	      new File(path);  // Always returns a File object
+
+	If the path refers to an existing folder: the File method returns a
+	Folder object instead of a File object; the new operator returns a
+	File object for a nonexisting file with the same name.
+
+
+	Opening a file. - The open method attempts to detect the encoding of
+	the open file. It reads a few bytes at the current location and tries
+	to detect the Byte Order Mark character 0xFFFE. If found, the current
+	position is advanced behind the detected character and the encoding
+	property is set to one of the strings UCS-2BE, UCS-2LE, UCS4-BE, UCS-
+	4LE, or UTF-8. If the marker character is not found, it checks for
+	zero bytes at the current location and makes an assumption about one
+	of the preceding formats (except UTF-8). If everything fails, the
+	encoding property is set to the system encoding.
+
+
+	File errors. - The following messages can be returned in the `error`
+	property (which by the way is writable):
+	--------------------------------------------------------------------
+	File or folder does not exist      The file or folder does not exist,
+	                                   but the parent folder exists.
+	--------------------------------------------------------------------
+	File or folder already exists      The file or folder already exists.
+	--------------------------------------------------------------------
+	I/O device is not open             An I/O operation was attempted on
+	                                   a file that was closed.
+	--------------------------------------------------------------------
+	Read past EOF                      Attempt to read beyond the end of
+	                                   a file.
+	--------------------------------------------------------------------
+	Conversion error                   The content of the file cannot be
+	                                   converted to Unicode.
+	--------------------------------------------------------------------
+	Partial multibyte character found  The character encoding of the file
+	                                   data has errors.
+	--------------------------------------------------------------------
+	Permission denied                  The OS did not allow the attempted
+	                                   operation.
+	--------------------------------------------------------------------
+	Cannot change directory            Cannot change the current folder.
+	--------------------------------------------------------------------
+	Cannot create                      Cannot create a folder.
+	--------------------------------------------------------------------
+	Cannot rename                      Cannot rename a file or folder.
+	--------------------------------------------------------------------
+	Cannot delete                      Cannot delete a file or folder.
+	--------------------------------------------------------------------
+	I/O error                          Unspecified I/O error.
+	--------------------------------------------------------------------
+	Cannot set size                    Setting the file size failed.
+	--------------------------------------------------------------------
+	Cannot open                        Opening of a file failed.
+	--------------------------------------------------------------------
+	Cannot close                       Closing a file failed.
+	--------------------------------------------------------------------
+	Read error                         Reading from a file failed.
+	--------------------------------------------------------------------
+	Write error                        Writing to a file failed.
+	--------------------------------------------------------------------
+	Cannot seek                        Seek failure.
+	--------------------------------------------------------------------
+	Cannot execute                     Unable to execute the specified
+	                                   file.
+	--------------------------------------------------------------------
+
+	*/
+
+	[PRIVATE]
+	
+	({
+		FERR: false,                                        // No-File flag. Must be falsy (0|false|null|undefined.)
+
+		LNFD: $$.inWin ? 'Windows' : 'Unix',                // [ADD170427] Default lineFeed. To change it, use either
+		                                                    // µ.macLineFeed(), µ.winLineFeed(), µ.unixLineFeed()
+
+		EXST: function(/*File*/ff)
+		//----------------------------------
+		// (File-Exist.)
+		// Whether `ff` actually exists as a File *and* can be read.
+		// => ff [OK] | FERR [KO]
+		{
+			return ff.exists && ff.open('r') ? (ff.close(), ff) : this.FERR;
+		},
+		
+		TOFL: function(/*File|str*/fx,/*0|1*/CHK)
+		//----------------------------------
+		// (To-File.)
+		// Inner alias of toFile.
+		{
+			return ( (fx instanceof File) ? fx : (fx=new File(String(fx))) ) ? 
+				( CHK ? this.EXST(fx) : fx ) : this.FERR;
+		},
+		
+		OPEN: function(/*File|str*/fx,/*w|e|r*/mde,/*BINARY|UTF8|UCS2*/enc,  ff,b,w)
+		//----------------------------------
+		// (Multi-Purpose-Open-Routine.)
+		// [CHG170427] Added lineFeed support.
+		{
+			// Get a valid File object.
+			// ---
+			if( !(ff=this.TOFL(fx,+('w'!=mde))) )
+			{
+				if( 'e' != mde ) return this.FERR;
+				
+				// Append mode (`e`). If the file doesn't already
+				// exist, attempt to create it in `w` mode first.
+				// ---
+				ff = callee.call(this,fx,'w',enc);
+				if( !ff ) return this.FERR;
+				ff.close();
+			}
+
+			// Check for opening (binary encoding first.)
+			// ---
+			ff.encoding = 'BINARY';
+			for( w=10 ; !(b=ff.open(mde)) && w-- ; $.sleep(10) ); // [ADD170512] Allow 100ms delay.
+			if( !b )
+			{
+				$.global[callee.µ.__root__].warn(__("%1 > Cannot open the file %2 in '%3' mode.", callee.µ, String(ff.fullName).toSource(), mde));
+				return this.FERR;
+			}
+
+			// Set the encoding.
+			// ---
+			('BINARY' != enc) && (ff.encoding = enc);
+			
+			// Set the linefeed (write mode only.)
+			// ---
+			if( 'w'==mde ) ff.lineFeed = this.LNFD;
+
+			// BOM? -- Unicode U+FEFF (UTF16) converts into UTF8 `EF BB BF`
+			// [DEL170717] Need more tests!
+			// ---
+			// if( 'w'==mde && 'U'==enc[0] && callee.µ['~'].UBOM ) ff.write('\uFEFF');
+
+			// Set the file pointer (append mode only.)
+			// ---
+			if( 'e'==mde ) ff.seek(0,/*EOF*/2);
+
+			return ff;
+		},
+
+		WAIT: function(/*File*/ff,/*uint=1000*/t,  r)
+		//----------------------------------
+		// [ADD170511]
+		// Wait until ff exists w/ respect to a maximum delay.
+		// [REM] Useful when ff is created from an external process.
+		// ff :: the file to wait for.
+		// t  :: maximum delay, in ms (default=1000.)
+		// => File [OK] | FERR [KO]
+		{
+			t || (t=1000);
+			for( t=(t/10)>>>0 ; (r=!ff.exists)&&t-- ; )
+			{
+				$.sleep(10);
+				ff = File(ff);
+			}
+			return r ? this.FERR : ff;
+		},
+
+	})
+
+	[PRIVATE]
+	
+	({
+		// [CHG180307] Changed temp file suffix from `tmp` to `txt`
+		// to make tempFile.execute() more OS-friendly.
+		// ---
+		TPFX: 'idex_',                                      // Temporary file prefix.
+		TSFX: 'txt',                                        // Temporary file suffix
+		TFIL: µ['~'].FERR,                                  // Temporary file.
+		
+		TRMV: function()
+		//----------------------------------
+		// Temporary File Remover.
+		{
+			this.TFIL && (this.TFIL.remove(),(this.TFIL=this.FERR));
+		},
+		
+		STM$: function($0)
+		//----------------------------------
+		// STMP replacer.
+		{
+			return String.fromCharCode(0x41+$0.charCodeAt(0));
+		},
+
+		STMP: function(/*4..9*/n)
+		//----------------------------------
+		// Build a timestamp formed of `n` letters in [a-z]
+		// => str
+		{
+			return Date.now().toString(26).substr(-n).replace(RegExp.DIGI,this.STM$);
+		},
+	})
+
+	//==========================================================================
+	// API
+	//==========================================================================
+
+	[PUBLIC]
+	
+	({
+		onLoad: function onLoad_()
+		//----------------------------------
+		{
+			// Remove temp file.
+			// ---
+			callee.µ['~'].TRMV();
+		},
+
+		toFile: function toFile_$File$S_b_$File$$false$(/*File|str*/fx,/*bool=0*/CHECK_EXIST)
+		//----------------------------------
+		// Return a File object based on fx (File or string.)
+		// If CHECK_EXIST is on, make sure that the file actually exists.
+		// [REM] This function *does not create* the file on disk.
+		// => File | FERR
+		{
+			return callee.µ['~'].TOFL(fx,CHECK_EXIST?1:0);
+		},
+
+		readBinary: function readBinary_$File$S_S$false$(/*File|str*/fx)
+		//----------------------------------
+		// Read a file in BINARY mode and return the resulting string.
+		// => str | FERR
+		{
+			return (fx=callee.µ['~'].OPEN(fx,'r','BINARY')) &&
+				[fx.read(),fx.close()][0];
+		},
+
+		writeBinary: function writeBinary_$File$S_S_$File$$false$(/*File|str*/fx,/*str*/s)
+		//----------------------------------
+		// Write the input string in a File in BINARY mode.
+		// => File | FERR
+		{
+			return (fx=callee.µ['~'].OPEN(fx,'w','BINARY')) &&
+				(fx.write(s), fx.close(), fx);
+		},
+
+		readUTF8: function readUTF8_$File$S_S$false$(/*File|str*/fx)
+		//----------------------------------
+		// Read a file in UTF8 mode and return the resulting string.
+		// [REM] No conversion is performed here, meaning that the
+		// output is regarded as UTF8 loaded in a JS-UTF16 string.
+		// => str | FERR
+		{
+			return (fx=callee.µ['~'].OPEN(fx,'r','UTF8')) &&
+				[fx.read(),fx.close()][0];
+		},
+
+		writeUTF8: function writeUTF8_$File$S_S_$File$$false$(/*File|str*/fx,/*str*/s)
+		//----------------------------------
+		// Write the input string in a File in UTF8 mode.
+		// [REM] No conversion is performed here, meaning that the
+		// input is regarded as UTF8 loaded in a JS-UTF16 string.
+		// => File | FERR
+		{
+			return (fx=callee.µ['~'].OPEN(fx,'w','UTF8')) &&
+				(fx.write(s), fx.close(), fx);
+		},
+
+		appendUTF8: function appendUTF8_$File$S_S_$File$$false$(/*File|str*/fx,/*str*/s,/*bool=0*/NEW_LINE)
+		//----------------------------------
+		// Append the input string into a File in UTF8 mode.
+		// [REM] No conversion is performed here, meaning that the
+		// input is regarded as UTF8 loaded in a JS-UTF16 string.
+		// => File | FERR
+		{
+			return (fx=callee.µ['~'].OPEN(fx,'e','UTF8')) &&
+				(fx[NEW_LINE?'writeln':'write'](s), fx.close(), fx);
+		},
+
+		readUTF16: function readUTF16_$File$S_S$false$(/*File|str*/fx)
+		//----------------------------------
+		// [ADD170511] Read a file in UTF8 mode and return the resulting string.
+		// [REM] No conversion is performed here, meaning that the
+		// output is regarded as UTF16.
+		// => str | FERR
+		{
+			return (fx=callee.µ['~'].OPEN(fx,'r','UCS2')) &&
+				[fx.read(),fx.close()][0];
+		},
+
+		writeUTF16: function writeUTF16_$File$S_S_$File$$false$(/*File|str*/fx,/*str*/s)
+		//----------------------------------
+		// [ADD170511] Write the input string in a File in UTF8 mode.
+		// [REM] No conversion is performed here, meaning that the
+		// input is regarded as UTF16.
+		// => File | FERR
+		{
+			return (fx=callee.µ['~'].OPEN(fx,'w','UCS2')) &&
+				(fx.write(s), fx.close(), fx);
+		},
+
+		appendUTF16: function appendUTF16_$File$S_S_$File$$false$(/*File|str*/fx,/*str*/s,/*bool=0*/NEW_LINE)
+		//----------------------------------
+		// [ADD170511] Append the input string into a File in UTF16 mode.
+		// [REM] No conversion is performed here, meaning that the
+		// input is regarded as UTF16.
+		// => File | FERR
+		{
+			return (fx=callee.µ['~'].OPEN(fx,'e','UCS2')) &&
+				(fx[NEW_LINE?'writeln':'write'](s), fx.close(), fx);
+		},
+
+		temp: function temp_s_s_b_b_$File$$false$(/*?str*/s,/*str='tmp'*/t,/*bool=0*/SHOW_FILE,/*str|bool=0*/enc,  I,b)
+		//----------------------------------
+		// Create a temporary file having the suffix `t` (default .tmp)
+		// and write the string s. If SHOW_FILE is true call execute()
+		// on it and prevent the file from being auto-removed.
+		// ---
+		// [CHG170511] If `enc` is 1 use the BINARY mode; if `enc` is 0 use UTF8;
+		// if `enc` is any XYZ string, use `writeXYZ` if available. (Fallback is UTF8.)
+		// This change is retro-compatible with the previous `AS_BIN` param.
+		// ---
+		// If no arg is supplied, remove existing temp file now.
+		// ---
+		// [REM] The temp file is automatically removed at each call,
+		// and at next loading stage, unless SHOW_FILE==1. Do not use
+		// this method to create files that require some persistence!
+		// => File | FERR
+		{
+			I = callee.µ['~'];
+			
+			// Clear it first.
+			// ---
+			I.TRMV();
+			if( 'undefined' == typeof s ) return I.FERR;
+
+			// Normalize the suffix and build the whole path.
+			// => t :: "/path/to/temp/<prefix><timestamp>.<suffix>"
+			// ---
+			( 'string' == typeof t && t.length ) || (t=I.TSFX);
+			'.' == t[0] || (t = '.' + t);
+			t = String(Folder.temp) + '/' + I.TPFX + I.STMP(5) + t;
+
+			// Write the file.
+			// [CHG170511] Allow new encodings ('UTF16'...)
+			// ---
+			enc = 1==enc ? 'Binary' : String(enc||'UTF8');
+			callee.µ.hasOwnProperty(enc='write'+enc) || (enc='writeUTF8');
+
+			I.TFIL = t = callee.µ[enc](t,s);
+
+			// Special case for SHOW_FILE==1.
+			// [CHG180307] Added folder execute fallback.
+			// ---
+			if( SHOW_FILE && t )
+			{
+				I.TFIL=I.FERR;
+				t.execute() || t.parent.execute();
+			}
+
+			return t;
+		},
+		
+		batchToString: $$.inWin ?
+		function batchToString_S_S(/*str*/cmd,  $$,I,out,ff)
+		//----------------------------------
+		// [CHG170512] Support of `%1` placeholder.
+		// Send a WIN batch command for output in a temporary file and return
+		// the result string from that file. The command `cmd` MUST contain
+		// a `%1` placeholder that represents the temp output file,
+		// e.g "@ECHO OFF<NL>SET > %1".
+		// [REM] Returns false if something fails for whatever reason.
+		// => str [OK] | FALSE [KO]
+		{
+			$$ = $.global[callee.µ.__root__]; // agnostic reference
+			I = callee.µ['~'];
+
+			// Temporary output file.
+			// ---
+			out = File(String(Folder.temp) + '/' + I.TPFX + I.STMP(5) + '.tmp');
+			
+			// Append out's full path to the command.
+			// ---
+			cmd = String(cmd||'');
+			if( -1 == cmd.indexOf('%1') )
+			{
+				(+$$.warn) && $$.warn(__("%1 > The command %2 must contain a %%1 placeholder.",callee.µ,cmd.toSource()));
+				return false;
+			}
+
+			cmd = __(cmd,'"'+out.fsName+'"');
+
+			// Create a temporary bat to be executed.
+			// ---
+			(+$$.trace) && $$.trace(__("%1 > Creating a batch file for the command:%2%3",
+				callee.µ,
+				$$.newLine+$$.Log.spaces,
+				cmd.toSource(String.SQ)
+				));
+
+			ff = callee.µ.temp(cmd,'bat',0,'Binary');
+			if( !ff )
+			{
+				(+$$.warn) && $$.warn(__("%1 > Unable to create the batch file %2.",callee.µ,String(ff)));
+				return false;
+			}
+			else
+			{
+				(+$$.trace) && $$.trace(__("%1 > Batch file %2 successfully created.",callee.µ,String(ff)));
+			}
+
+			if( !ff.execute() )
+			{
+				(+$$.warn) && $$.warn(__("%1 > Failed to execute the batch command:%2%3",
+					callee.µ,
+					$$.newLine+$$.Log.spaces,
+					cmd.toSource(String.SQ)
+					));
+				return false;
+			}
+			else
+			{
+				(+$$.trace) && $$.trace(__("%1 > Batch file successfully executed.",callee.µ,String(ff)));
+			}
+
+			// Wait for output file availability.
+			// ---
+			if( !(out=I.WAIT(out,1000)) )
+			{
+				(+$$.warn) && $$.warn(__("%1 > Cannot create the output file.",callee.µ,String(out)));
+				return false;
+			}
+			else
+			{
+				(+$$.trace) && $$.trace(__("%1 > Output file %2 ready for reading.",callee.µ,String(out)));
+			}
+			
+			// Read the result into a string.
+			// ---
+			cmd = callee.µ.readBinary(out);
+
+			// Clean up
+			// ---
+			callee.µ.temp();
+			out.remove();
+			
+			if( !cmd.length )
+			{
+				(+$$.warn) && $$.warn(__("%1 > Unable to read the file: %2",callee.µ,String(out)));
+				return false;
+			}
+
+			(+$$.trace) && $$.trace(__("%1 > Result of the batch command: %2",callee.µ,cmd.toSource()));
+			return cmd;
+		}
+		:
+		function batchToString_S_S(/*str*/cmd,  I,out,ff)
+		//----------------------------------
+		// [TODO] Send a MAC bash script etc.
+		{
+			return false;
+		},
+
+		unixLineFeed : function unixLineFeed_()
+		//----------------------------------
+		// [ADD170427] Change file creation lineFeed into "Unix", ie <LF>.
+		{
+			callee.µ['~'].LNFD = "Unix";
+		},
+
+		macLineFeed : function macLineFeed_()
+		//----------------------------------
+		// [ADD170427] Change file creation lineFeed into "Macintosh", ie <CR>.
+		// [REM] Classic Mac OS <CR> is considered obsolete.
+		{
+			callee.µ['~'].LNFD = "Macintosh";
+		},
+
+		winLineFeed : function winLineFeed_()
+		//----------------------------------
+		// [ADD170427] Change file creation lineFeed into "Windows", ie <CRLF>.
+		{
+			callee.µ['~'].LNFD = "Windows";
+		},
+		
+		stamp: function stamp_I_S(/*uint=5*/size)
+		//----------------------------------
+		// [ADD171203] Return a timestamp formed of `size` letters in [a-z].
+		// `size` ranges in 4..9.
+		// => str   e.g "bazbo"
+		{
+			(size>>>=0) || (size=5);
+			4 > size ? (size=4) : ( 9 < size && (size=9) );
+			return callee.µ['~'].STMP(size);
+		},
+
+	})

@@ -1,0 +1,791 @@
+/*******************************************************************************
+
+		Name:           regexp
+		Desc:           Improves RegExp class and prototype.
+		Path:           /core/Ext/$$.regexp.jsxinc
+		Require:        Ext/patterns ; Ext/string
+		Encoding:       ÛȚF8
+		Core:           YES
+		Kind:           Part of /Ext
+		API:    STATIC  escape() fromCodeRanges()
+		         PROTO  flags() toSource() ==()
+		DOM-access:     ---
+		Todo:           Testing toSource & escape in clinical cases ; perf tests.
+		Created:        170305 (YYMMDD)
+		Modified:       201005 (YYMMDD)
+
+*******************************************************************************/
+
+	//==========================================================================
+	// BACKGROUND
+	//==========================================================================
+
+	/*
+
+	[ECMA] The RegExp constructor applies the following grammar to the
+	input pattern string. An error occurs if the grammar cannot interpret
+	the string as an expansion of Pattern.
+
+	Pattern      ::   Disjunction
+	Disjunction  ::   Alternative | ( Alternative | Disjunction )
+	Alternative  ::   <empty> | ( Alternative Term )
+	Term         ::   Assertion | Atom | ( Atom Quantifier )
+	Assertion    ::   `^` | `$` | `\b` | `\B`
+	Quantifier   ::   QPrefix | ( QPrefix `?` )
+	QPrefix      ::   `*` | `+` | `?` |
+	                  ( `{` DecDigits `}` )   |
+	                  ( `{` DecDigits `,}` )  |
+	                  ( `{` DecDigits `,` DecDigits `}` )
+
+	Atom         ::   PatternChar | `.` | ( `\` AtomEsc ) | CharClass |
+	                  `(` Disjunction `)`     |
+	                  `(?:` Disjunction `)`   |
+	                  `(?=` Disjunction `)`   |
+	                  `(?!` Disjunction `)`
+
+	PatternChar  ::   SourceChar — `^$\.*+?()[]{}|]`
+	AtomEsc      ::   DecEsc | CharEsc | CharClassEsc
+	CharEsc      ::   CtrlEsc | ( `c` CtrlLetter ) | HexEscSeq | UnicodeEscSeq | IdentityEsc
+	CtrlEsc      ::   `f` | `n` | `r` | `t` | `v`
+	CtrlLetter   ::   <any a..z A..Z>
+	IdentityEsc  ::   SourceChar — IdentifierPart
+	DecEsc       ::   DecIntLiteral [lookahead not DecDigit]
+
+	CharClassEsc ::   `d` | `D` | `s` | `S` | `w` | `W`
+	CharClass    ::   `[` [lookahead not `^`] ClassRanges `]`
+	                  `[^` ClassRanges `]`
+	ClassRanges  ::   <empty> | NonemptyCR
+	NonemptyCR   ::   ClassAtom | ( ClassAtom NonemptyCRND ) | ( ClassAtom `-` ClassAtom ClassRanges )
+	NonemptyCRND ::   ClassAtom | ( ClassAtomND NonemptyCRND ) | ( ClassAtomND `-` ClassAtom ClassRanges )
+	ClassAtom    ::   `-` | ClassAtomND
+	ClassAtomND  ::   SourceChar — `\]-)`
+	                  ( `\` ClassEsc )
+	ClassEsc     ::   DecEsc | `b` | CharEsc | CharClassEsc
+	SourceChar   ::   <any Unicode character>
+
+
+	CONSTRUCTOR CALLED AS A FUNCTION. - RegExp(pattern, flags)
+	If pattern is an object R whose [[Class]] property is "RegExp" and
+	flags is undefined, then return R unchanged. Otherwise call the RegExp
+	constructor, passing it the pattern and flags arguments and return
+	the object constructed by that constructor.
+	
+	(a) RegExp(myRegExp)             =>  returns myRegExp unchanged.
+	    myRegExp===RegExp(myRegExp)  =>  true (tested in all ExSc versions.)
+	
+	(b) RegExp(myRegExp,"any")       =>  TypeError (tested.)
+	
+	(c) RegExp("pattern","any")      =>  new RegExp('pattern','any')
+
+	CASE INSENSITIVITY. - In case-insignificant matches all characters are
+	implicitly converted to upper case immediately before they are
+	compared. However, if converting a character to upper case would
+	expand that character into more than one character (such as converting
+	"ß" (\u00DF) into "SS"), then the character is left as-is instead. The
+	character is also left as-is if it is not an ASCII character but
+	converting it to upper case would make it into an ASCII character.
+	This prevents Unicode characters such as \u0131 and \u017F from
+	matching regular expressions such as /[a-z]/i, which are only intended
+	to match ASCII letters.
+
+	Even if the pattern ignores case, the case of the two ends of a range
+	is significant in determining which characters belong to the range.
+	Thus, for example, the pattern /[E-F]/i matches only the letters E, F,
+	e, and f, while the pattern /[E-f]/i matches all upper and lower-case
+	ASCII letters as well as the symbols "[", "\", "]", "^", "_", and "`".
+
+	ESCAPING. - A ClassAtom can use any of the escape sequences that
+	are allowed in the rest of the regular expression except for \b, \B,
+	and backreferences. Inside a CharacterClass, \b means the backspace
+	character, while \B and backreferences raise errors. Using a
+	backreference inside a ClassAtom causes an error.
+
+	[ECMA2009] The characters / or backslash \ occurring in the pattern
+	shall be escaped in S as necessary to ensure that the String value
+	formed by concatenating the Strings "/", S, "/", and F can be parsed
+	(in an appropriate lexical context) as a RegularExpressionLiteral that
+	behaves identically to the constructed regular expression. For
+	example, if P is "/", then S could be "\/" or "\u002F", among other
+	possibilities, but not "/", because /// followed by F would be parsed
+	as a SingleLineComment rather than a RegularExpressionLiteral. If P is
+	the empty String, this specification can be met by letting S be "(?:)".
+	
+	But the above rules are not implemented in ExtendScript!
+
+	*/
+
+	//==========================================================================
+	// IMPLEMENTATION NOTES
+	//==========================================================================
+
+	/*
+
+	0. JSON PURPOSE: toString() vs source / toSource() / uneval.
+	__________________________________________________________________
+	
+	[ECMA] The `source` property of the newly constructed object is set to
+	an implementation-defined string value in the form of a Pattern based
+	on [the one used in constructing the RegExp instance].
+	
+	(But) an implementation may choose to take advantage of `source` being
+	allowed to be different from the source passed to the RegExp
+	constructor to escape special characters. For example, in the
+	regular expression obtained from new RegExp("/"), source could be,
+	among other possibilities, "/" or "\/". The latter would permit the
+	entire result ("/\//") of the toString call to have the form
+	RegularExpressionLiteral.
+	
+	In ExtendScript, myRegExp.source is implemented (although not
+	documented) and it returns a string that exactly reflects the inner
+	pattern (w/o slashes and flags),
+
+	      /a\\[a-zé\xE9\|]e+/g.source  =>  `a\\[a-zé\xE9\|]e+`
+	
+	But if the RegExp has been built using a string pattern, it
+	is not safe to use its source in a literal regex, because:
+	
+	      RegExp("/").source  =>  `/`
+	
+	and /// yields undefined ; /\// should be used here, which
+	by the way properly works regarding its `source` property:
+	
+	      /\//.source          =>  `\/`
+	
+	Similar comments could be done regarding RegExp(""), whose
+	source is "" while it should be "(?:)" as suggested in [ECMA2009].
+	
+	Now, myRegExp.toString() returns the whole pattern string
+	*including* in/out slashes and flags:
+	
+	      String(/a\\[a-zé\xE9\|]e+/g)  =>  `/a\\[a-zé\xE9\|]e+/g`
+	
+	Note, however, that flags are reordered in 'gim' order:
+	
+	      String(/abc/mig)     =>  `/abc/gim`
+	
+	But the issue remains regarding string-based RegExp:
+	
+	      String(RegExp("/"))  =>  `///`  (KO)
+	
+	which won't evaluate to the original regex (=>undefined).
+	
+	The method toSource() and the function uneval() are NOT properly
+	implemented in CS4-CS6, while in CC they return a string of the
+	form "(new RegExp(/xyz/f))". But the '/' test still fails:
+	
+	      eval(RegExp('/').toSource());  =>  ERROR! (due to ///)
+	
+	Thus, the safest way of stringifying a RegExp in all ExtendScript
+	versions is not
+	
+	      "RegExp(" + String(myRegExp) + ")"   // almost good...
+	
+	Instead, we operate as described in RegExp.prototype.toSource()
+	below, making sure that `/` and `\` are always treated the same
+	way and do not lead to tricky issues.
+
+
+	1. UPPERCASE DIGITS IN \uHHHH AND \xHH.
+	__________________________________________________________________
+
+	In CS4, escape sequences of the form \uHHHH and \xHH are not recognized
+	if lowercase hexa digits are used in the RegExp pattern.
+
+	E.g   /f\xeate/.test("fête")   // => CS4: false (KO) ; CS6/CC: true (OK)
+
+	Workaround. - Always use uppercase hexa digits in literal regex,
+
+	      /f\xEAte/.test("fête")   // => true (OK) all versions
+
+
+	2. LASTINDEX ISSUE.
+	__________________________________________________________________
+
+	According to [ECMA], String.prototype.search(RegExp) shouldn't
+	modify the lastIndex property of the regex. But ExtendScript has a
+	generic issue in updating RegExp.lastIndex in various contexts. E.g:
+	
+	      var reg = /bar/;
+	      alert( 'foobar'.search(reg) );    // => 3
+	      alert( 'foobar'.search(reg) );    // => -1 !
+
+	The second search(...) fails because reg.lastIndex has been modified
+	during the first call. (This bug may be really harmful if you're used
+	to 'precompile' your regex for optimization purpose.)
+
+	Workaround. - Always set `reg.lastIndex=0` before each call to the
+	search() method.
+
+
+	3. CLASS RANGE AND DASH `-`.
+	__________________________________________________________________
+
+	[ECMA] The '-' character can be treated literally or it can denote a range.
+	It is treated literally if it is the first or last character of ClassRanges,
+	the beginning or end limit of a range specification, or immediately follows
+	a range specification.
+
+	In ExtendScript (all versions) the pattern /[a\x2Dz]/ is treated as the
+	/[a-z]/ class range, that is, /[a\x2Dz]/.test('b')==true. In other words,
+	`\x2D` is not a valid escape of `-` in that context.
+	
+	Workaround. - Use `\-` instead, or position the dash as specified in [ECMA].
+
+
+	4. VERTICAL BAR `|` IN CLASS CONTEXT.
+	__________________________________________________________________
+
+	According to [ECMA], the characters that require escaping in class context
+	are: '\' ']' '-' and ')'. In CS5, however, the pipe '|' may also require
+	escaping.
+	
+	Workaround. - Use `\|` in any context.
+
+
+	5. NEGATED CLASS BUG (CS4) --MAYBE RELATED TO BACKTRACKING.
+	__________________________________________________________________
+
+	In CS4, a negated class based on at least one range and additional items,
+	such as [^a-cjk], seems to erroneously match the ending bound of the
+	input string:
+	
+	      /xyz[^a-cjk]/.test("xyz")   // => CS4: true (KO) ; CS5+: false (OK)
+	      "abc".search(/[^a-cjk]/)    // => CS4: 3 (KO) ; CS5+: -1 (OK)
+	
+	So, under the above conditions the CS4 engine behaves as if the input had
+	a final ghost character which is regarded as matching the negated class.
+	This bug is specific to the case where the negated class wants to match
+	the end-of-string position, the regex works fine when the input string
+	still provides character(s) to eat:
+	
+	      /xyz[^a-z0-9]/.test("xyz@")  // => true  (OK) all versions
+	      /xyz[^a-z0-9]/.test("xyz5")  // => false (OK) all versions
+
+	Workaround. - It is usually possible to use a negative lookahead rather
+	than the negated class, subject that we also force the regex to consume
+	one more char after the lookahead. So replacing `[^xxx]` by `(?![xxx]).`
+	solves the problem:
+	
+	      /xyz(?![a-z0-9])./.test("xyz5")  // => false (OK) all versions
+	      /xyz(?![a-z0-9])./.test("xyz@")  // => true  (OK) all versions
+	      /xyz(?![a-z0-9])./.test("xyz")   // => false (OK) all versions
+
+	      "xyz5".match(/xyz(?![a-z0-9])./) // => null  (OK) all versions
+	      "xyz@".match(/xyz(?![a-z0-9])./) // => foo@  (OK) all versions
+	      "xyz".match(/xyz(?![a-z0-9])./)  // => null  (OK) all versions
+
+
+	6. BACKTRACKING BUGS (CS6 AND LATER.)
+	__________________________________________________________________
+
+	Note. - By default JS RegExp quantifiers are greedy, e.g `a*` entirely
+	captures "aaaaaa". (One can make any quantifier non-greedy by
+	adding ? after it, e.g. /a*?/, /a+?/, etc.)
+	
+	Greedy quantifiers ( +, *, {m,n} ) may cause issues in ExtendScript
+	when mixed with optional sub-patterns, especially in CS6 and later.
+
+	      /(aA?|bB?)+$/.test("bx")   // => CS4: false (OK) ; CS6-CC: FREEZE!
+
+	      /(a|bB?)+$/.test("bx")     // => CS4: false (OK) ; CS6-CC: FREEZE!
+
+	It sounds like these 'explosive quantifiers' are not properly addressed
+	due to backtracking bugs that affect other parts of the regex engine.
+	Thus, CS6-CC doesn't interpret the scheme /((A|B)|C)/ the right way:
+
+	      /^((a|b)|c)+$/.test("ac")  // => CS4: true (OK) ; CS6-CC: false (KO)
+
+	while
+
+	      /^((a|b)|c)+$/.test("ca")  // => true  (OK) all versions
+
+	Interestingly,
+
+	      /^(c|(a|b))+$/.test("ac")  // => CC: true  (OK)
+	      /^(c|(a|b))+$/.test("ca")  // => CC: true  (OK)
+
+	Since /((A|B)|C)/ is equivalent to /(A|B|C)/ there is no reason--in
+	principle--to use those additional capturing parentheses. However,
+	a more robust rule should be observed to avoid flaws.
+	
+	Guess. - Maybe (5) and (6) symptoms reflect the same issue in opposite
+	directions (CS4 vs. CS6-CC--not tested in CS5.) The reason why CS4
+	wrongly returns 3 on `"abc".search(/[^a-cjk]/)`, advancing the index
+	to the end of the input, could also be the reason why it succeeds in
+	breaking the loop that affects CS6-CC on `/(aA?|bB?)+$/.test("bx")`.
+	[To be investigated.]
+
+
+	7. ISSUE INVOLVING THE NUL CHARACTER (U+0000)
+	__________________________________________________________________
+
+	ExtendScript 3.x (CS4) has several flaws in processing the NUL
+	character, especially in the context of the split() method. Everything
+	happens as if '\x00' was interpreted as a reserved value or something
+	of a breakpoint. Given
+	
+	      s = "A\x00B\x00C\x00D";
+	
+	      s.split('\x00')  // => CS4: ["", "", "", "", "", "", "", ""] (KO)
+	                       // => CS5: ["A", "B", "C", "D"] (OK)
+
+	Also, String.prototype.replace() cannot properly address U+0000 in both
+	CS4, CS5, and CS6--while String.prototype.match() seems to work.
+
+	Workaround. - Rewrite the prototyped methods wherever needed! [TODO]
+
+	*/
+
+	//==========================================================================
+	// RegExp.prototype.flags()
+	//==========================================================================
+
+	RegExp.prototype.flags = function flags()
+	//----------------------------------
+	// Flag-string of the regex in g-i-m order. See [ECMA].
+	// => '' | 'g' | 'i' | 'm' | 'gi' | 'gm' | 'im' | 'gim'
+	{
+		return (this.global ?'g':'') +
+			(this.ignoreCase?'i':'') +
+			(this.multiline ?'m':'');
+	};
+
+	//==========================================================================
+	// RegExp.prototype.toSource() ; RegExp.prototype['==']
+	//==========================================================================
+
+	RegExp.prototype.toSource = function toSource()
+	//----------------------------------
+	// Return a valid, ASCII-safe, uneval-string S for this
+	// regex such as `this` is equivalent to eval(S).
+	// [TODO] Normalize the result to improve ==() reliability.
+	// [171204] Rephrased comments.
+	// ---
+	// [REM] `S` has the form 'RegExp("str","flg")' where
+	//       "str" comes from String.prototype.toSource(),
+	//       so the full result is ASCII-safe and one-line.
+	// ---
+	// [REM] RegExp.prototype['=='] is implemented using
+	//       the present method, so we have this==eval(S).
+	{
+		// PROBLEM.
+		//   (a) RegExp("x/y")
+		//   (b) RegExp("x\\/y")
+		//   (c) /x\/y/
+		// all describe the *same* regex, that is, the one
+		// that matches "x/y". The native `source` property
+		// provides the following results:
+		//   (a).source == "x/y"
+		//   (b).source == (c).source == "x\\/y"
+		// We'd want `toSource()` to consistently return
+		// `RegExp("x\\/y")` in all three cases (in order
+		// to improve regex comparison.)
+		// [REM] Technically we return the literal string
+		//   `"x<BK><BK>x2Fy"` (which evals to "x<BK>x2Fy")
+		// instead of
+		//   `"x<BK><BK>/y"`   (which evals to "x<BK>/y")
+		// This way <SL> is removed from the literal,
+		// which may be safer in exotic contexts.
+		// ALGORITHM IN USE.
+		// ---
+		// 0. Consider this.source.
+		// 1. Replace /BKBK/ by "\\x5C"  { `\\` } => `\x5C`
+		//    (so there is no longer `\\` in the string.)
+		// 2. Replace /BKSL/ by <SL>     { `\/` } => `/`
+		//    (since every `\/` is equivalent to `/`.)
+		// 3. Replace /SL/   by "\\x2F"  { `/`  } => `\x2F`
+		//    (force Unicode escaping of <SL>, U+002F)
+		// 4. Call String.toSource() and format the result.
+		// ---
+		return $.global.localize(
+			'RegExp(%1,"%2")',
+			(this.source || '(?:)')             // As [ECMA] suggests for ''.
+				.replace(RegExp.BKBK,'\\x5C')   // Step 1.
+				.replace(RegExp.BKSL,String.SL) // Step 2.
+				.replace(RegExp.SL,'\\x2F')     // Step 3.
+				.toSource(),
+			this.flags()
+			);
+	};
+
+	//==========================================================================
+	// IMPLEMENTATION NOTES
+	//==========================================================================
+
+	/*
+
+	Two regexes may capture exactly the same matches despite different
+	patterns. For example, /\d/ vs. /[0-9]/. However, we shall consider
+	such regexes *distinct* in the current implementation, based on the
+	fact that the patterns /\d/ and /[0-9]/ differ in syntax whatever
+	their equivalent semantics. By contrast, /aa\rbb\x01/ should be
+	regarded as strictly identical to /aa\x0Dbb\u0001/ in the sense those
+	patterns actually map to the same characters.
+
+	Thus, although not easily defined at a formal level, the identity
+	operator over RegExp objects can be roughly approximated based on the
+	`source` property. Even in ExtendScript's implementation, the same
+	source always reflects the same pattern. That is, given two patterns
+	P1 and P2 forming regular expressions R1 and R2 whose `source` strings
+	are resp. S1 and S2, we always have:
+
+	      S1 == S2  ->  P1 == P2   (from which we'll declare R1 == R2)
+
+	For example, the source `x\/y` can be reached from either
+	R1 = RegExp("x\\/y") or R2 = /x\/y/, and it turns out that those two
+	regexes have the same underlying pattern, namely /x\/y/.
+
+	Thus, checking whether R1.source == R2.source is SUFFICIENT to return
+	R1 == R2. But having equal sources is not a NECESSARY condition, as
+	the same pattern may have distinct sources. Noting that RegExp("x\\/y")
+	actually reduces to RegExp("x/y"), we already have an obvious example
+	at hand:
+
+	      (a) RegExp("x/y").source == `x/y`
+
+	      (b)        /x\/y/.source == `x\/y`
+
+	also,
+
+	      (c)    /x\u002Fy/.source == `x\u002Fy`
+
+	which all describe the same pattern /x\/y/.
+
+	Example 2:
+	---------
+	      (a) RegExp("x\\y").source == `x\y`   (== /x\y/.source)
+
+	      (b)   RegExp("xy").source == `xy`    (== /xy/.source)
+
+	both describe the pattern /xy/ --since \y means nothing but y.
+
+	Example 3:
+	---------
+	(a) RegExp("x\\t").source == `x\t`   (== /x\t/.source)
+
+	(b)  RegExp("x\t").source == `x<TB>` (== /x<TB>/.source)
+
+	both describing the match `x<TB>`. (Note here that /x\t/ is
+	in no way equivalent to /xt/!)
+
+	*/
+
+	RegExp.prototype['=='] = function equals(/*RegExp*/re)
+	//----------------------------------
+	// Tell whether two regexes are based on the same pattern.
+	// => true | false
+	{
+		// The first test is faster (sufficient condition),
+		// it avoids to invoke toSource where not required.
+		// ---
+		return this.source == re.source || this.toSource() == re.toSource();
+	};
+
+	//==========================================================================
+	// RegExp.escape()  [static]
+	//==========================================================================
+
+	/*
+
+	[RES] <github.com/benjamingr/RegExp.escape>
+	"It is often the case when we want to build a regular expression out
+	of a string without treating special characters from the string as
+	special regular expression tokens."
+
+	Here are the rules that involve lexical tokens in RegExp [ECMA]:
+	
+	========================================================
+	Disjunction :=
+	      <Alternative> | <Alternative> `|` <Disjunction>
+	      => ESC: `|` and {<Alternative>}
+	--------------------------------------------------------
+	Alternative :=
+	      <empty> | <Alternative> <Term>
+	      => ESC: {<Term>}
+	--------------------------------------------------------
+	<Term> :=
+	      <Assertion> | <Atom> | <Atom> <Quantifier>
+	      => ESC: {<Assertion>,<Atom>,<Quantifier>}
+	--------------------------------------------------------
+	<Assertion> :=
+	      `^` | `$` | `\b` | `\B` |
+	      `(?=` <Disjunction> `)` | `(?!` <Disjunction> `)`
+	      => ESC: `^` `$` `\` `(`
+	--------------------------------------------------------
+	<Atom> :=
+	      <PatternCharacter> | `.` | `\` <AtomEscape> |
+	      <CharacterClass> | `(` <Disjunction> `)` |
+	      `(?:` <Disjunction> `)`
+	      => ESC: `.` `\` `(` and {<PatternCharacter>,<CharacterClass>}
+	--------------------------------------------------------
+	<PatternCharacter> :=
+	      <SourceCharacter> - { `^$\.*+?()[]{}|` }
+	      => ESC: N/A (all characters are OK.)
+	--------------------------------------------------------
+	<CharacterClass> :=
+	      `[` <lookahead_not_^> <ClassRanges> `]` |
+	      `[^` <ClassRanges> `]`
+	      => ESC: `[`
+	--------------------------------------------------------
+	<Quantifier> :=
+	      <QuantifierPrefix> | <QuantifierPrefix> `?`
+	      => ESC: {<QuantifierPrefix>} -- see below
+	--------------------------------------------------------
+	<QuantifierPrefix> :=
+	      `*` | `+` | `?` |
+	      `{` <DecimalDigits> `}` | `{` DecimalDigits `,}` |
+	      `{` <DecimalDigits> `,` <DecimalDigits> `}`
+	      => ESC: `*` `+` `?` `{`
+	========================================================
+
+	Hence, given a string S to be used in the RegExp constructor with no
+	regex edge effect, using e.g `RegExp( S + ... )` or `RegExp( "(?" + S
+	+ ")" )`, it is sufficient to escape in S the following characters:
+
+	      `|` `^` `$` `\` `(` `.` `[` `*` `+` `?` `{`
+	
+	that is,
+
+	      [\|\^$(.)\[\]{*+?}\\]
+
+	after adding the closing counterparts of `(`, `{`, and `[`.
+	This is the Canonical RegExp-Escaping Class, as defined as
+	`RegExp.RESC` in Ext/patterns.
+
+	*/
+
+	RegExp.escape = function escape(/*str*/s,/*-1|0|1=0*/intent,  k)
+	//----------------------------------
+	// [171205] Static RegExp.escape() routine, as suggested
+	// by B. Gruenbaum at <github.com/benjamingr/RegExp.escape>.
+	// Given the input string `s`, return a string `r` such
+	// that `RegExp('^' + r + '$').test(s) === true`. In other
+	// words, `r` fully describes `s` with no regex effect.
+	// This is the 'primary contract' of this function.
+	// ---
+	// E.g    escape("abc")       => "abc"
+	//        escape("a.b?")      => "a\\.b\\?"
+	//        escape("^[a-b](c)") => "\\^\\[a-b\\]\\(c\\)"
+	// ---
+	// `intent`  0   Default. The output is not intended to interact
+	//               with a dangerous prefix string so it only requires
+	//               escaping the canonical symbols `|^$(.)[]{*+?}\`
+	//               -------------------------------------------------
+	// `intent` +1   Safer. The output may be merged with an arbitrary
+	//               prefix string so it requires more precaution.
+	//               Hyphens `-` and leading digits are treated too,
+	//               to avoid undesired collisions w/ dangerous chars.
+	//               -------------------------------------------------
+	// `intent` -1   Literal. The output is intended to take place in a
+	//               literal regex, e.g `/<output>/`. For that reason,
+	//               the regular str.toSource() routine has to be invoked
+	//               before processing to avoid syntactic problems.
+	//               By contrast with the previous cases, our
+	//               requirement is now:
+	//                 eval('/^' + output + '$/').test(input) === true;
+	//               Keep in mind that this 'literal' mode is a special
+	//               feature which does not, in general, satisfy the
+	//               primary contract.
+	// => str
+	{
+		if( !(intent|=0) )
+			return s.replace(RegExp.RESC, '\\$&');
+		
+		if( 0 < intent )
+		{
+			// Safer intent.
+			// ---
+			k = 'RSAF';
+		}
+		else
+		{
+			// Literal intent.
+			// ---
+			s = s.toSource(false); // false means 'no quotes'.
+			k = 'RLIT';
+		}
+
+		s = s.replace(RegExp[k], '\\$&');
+		
+		// Escape any *leading* hex digit [a-fA-F0-9] using `\xHH`
+		// ---
+		// [REM] In this context, that would be a terrible mistake
+		// to simply prepend <BK>, since any construction among
+		// <BK>[0-9bBcdDlLsSuUvwWx] has a special regex effect!
+		// ---
+		if( 0 <= 'abcdefABCDEF0123456789'.indexOf(k=s.charAt(0)) )
+		{
+			k = "\\x" + k.charCodeAt(0).toString(16).toUpperCase();
+			s = k + s.substr(1);
+		}
+		
+		return s;
+	};
+
+	//==========================================================================
+	// RegExp.fromCodeRanges()  [static]
+	//==========================================================================
+
+	RegExp.fromCodeRanges = function fromCodeRanges(/*(u24|[u24,u24]|hex|`hex..hex`|[hex,hex])[]*/codeRanges,/*bool*/OUT_GLOBAL_REGEX,  a,r,X,Y,i,t,n,x,y,X,Y)
+	//----------------------------------
+	// [UPD201005] Given an array of code ranges, create a RegExp pattern
+	// that captures the corresponding characters. Every codepoint can be
+	// specified either as a hex string ('7F', '00D6', '10AAAA'), or as a
+	// u24 integer (127, 0xD6, 0x10AAAA) up to 0x10FFFF. Then any range is
+	// specified either as a `hex..hex` string ('41..7F', 'FE00-FEFF',
+	// 'E11AA..E11FF'), or as an array of two elements, e.g [0x41,0x7F],
+	// ['FE00','FEFF'], or [0xE11AA,'E11FF']. The arg `codeRanges` is an
+	// array of such elements (a single string or number is supported though.)
+	// The function returns a pattern (str) of the form <CLASS>(|<SURROG>)*,
+	// where <CLASS> is a regular class pattern e.g `[\u0009\u0041-\u005A]`
+	// and every <SURROG> a surrogate pair (e.g `\uD835\uDCD0`) or range,
+	// e.g `\uD835[\uDCD0-\uDCFF]`. The output string can be evaluated to
+	// a RegExp using typically `(eval( '(/' + <output> + '/)' ))`. Note that
+	// every `\uHHHH` in the output is a literal string of 6 characters, it
+	// actually contains the backslash character (`\`), the `u` letter, etc.
+	// Also, every hexadecimal digit is in uppercase form. If `OUT_GLOBAL_REG`
+	// is truthy, returns a global RegExp rather than a string.
+	// ---
+	// [CHG200924] This function manages UTF16 surrogate pairs if needed. E.g
+	// the range '1D7AA..1D7C2' results in `\uD835[\uDFAA-\uDFC2]`. Larger
+	// ranges are now supported as well, e.g `1F5F4..20AD2`.
+	// ---
+	// E.g
+	//    fromCodeRanges("41..7F")
+	//      => `[\u0041-\u007F]`
+	//    fromCodeRanges( [0x9,'0041..005A',[0xC0,0xD6],['D8','DE'],'0100'] )
+	//      => `[\u0009\u0041-\u005A\u00C0-\u00D6\u00D8-\u00DE\u0100\u0102]`
+	//    fromCodeRanges( ['1D4D0..1D4FF', [0x10FF00, 0x10FFFF]] )
+	//      => `\uD835[\uDCD0-\uDCFF]|\uDBFF[\uDF00-\uDFFF]`
+	//    fromCodeRanges( "1F5F4..20AD2", true )
+	//      => /\uD83D[\uDDF4-\uDFFF]|[\uD83E-\uD841][\uDC00-\uDFFF]|\uD842[\uDC00-\uDED2]/
+	// ---
+	// => str|RegExp [OK]  |  false [KO]
+	{
+		a = codeRanges instanceof Array ? codeRanges : [codeRanges];
+
+		const MF = Math.floor;
+		const UH = callee.UHEX;
+
+		for( r={simple:'',surrog:''}, X={hi:0,lo:0}, Y={hi:0,lo:0}, i=-1 ; ++i < a.length ; )
+		{
+			t = a[i];
+			'string'==typeof t && (t=t.split('..'));
+			
+			if( t instanceof Array )
+			{
+				if( !(n=t.length) ) continue;
+				x = t[0];
+				y = 2 <= n && t[1];
+			}
+			else
+			{
+				x = t;
+				y = false;
+			}
+			
+			x = 'number'==typeof x ? (x>>>0) : parseInt(x,16);
+			if( isNaN(x) || 0x10FFFF < x ) continue;
+			
+			if( y )
+			{
+				y = 'number'==typeof y ? (y>>>0) : parseInt(y,16);
+				( isNaN(y) || y <= x || 0x10FFFF < y ) && (y=false);
+			}
+			
+			// ---
+			// Represent either the character X (if the codepoint `x`
+			// is alone), or the range X..Y (if `y` is defined too.)
+			// ---
+
+			if( 0xFFFF < x )
+			{
+				x -= 0x10000;
+				X.hi = 0xD800 + MF(x/0x400);
+				X.lo = 0xDC00 +   (x%0x400);
+			}
+			else
+			{
+				X.hi = 0;
+				X.lo = x;
+			}
+
+			// Single character (either simple or surrogate pair.)
+			// ---
+			if( !y )
+			{
+				X.hi
+				? ( r.surrog += '|' + UH(X.hi) + UH(X.lo) )
+				: ( r.simple += UH(X.lo) );
+				continue;
+			}
+			
+			// Simple character range?
+			// ---
+			if( 0xFFFF >= y )
+			{
+				r.simple += UH(X.lo, y);
+				continue;
+			}
+
+			// [ADD200924] x <= 0xFFFF  ->  split x..Y into x..'FFFF' + '10000'..Y
+			// ---
+			if( X.hi == 0 )
+			{
+				r.simple += UH(x,0xFFFF);                   // x..'FFFF'
+				
+				// Reset X to 0x10000 and normalize.
+				// ---
+				x = 0;                                      // By subtracting 0x10000.
+				X.hi = 0xD800;
+				X.lo = 0xDC00;
+			}
+
+			// ---
+			// Dealing with complex range based on two surrogate pairs.
+			// ---
+
+			// Normalize Y.
+			// ---
+			y -= 0x10000;
+			Y.hi = 0xD800 + MF(y/0x400);
+			Y.lo = 0xDC00 +   (y%0x400);
+			
+			// [ADD200924] Feed `surrog` until X.hi == Y.hi.
+			// ---
+			( X.hi < Y.hi && 0xDC00 < X.lo )
+			&& ( (r.surrog += '|' + UH(X.hi) + UH(X.lo, 0xDFFF, 1)), ++X.hi, X.lo=0xDC00 );
+			
+			( (t=0xDFFF > Y.lo) || X.hi < Y.hi )
+			&& ( (r.surrog += '|' + UH(X.hi, -t+Y.hi, 1) + UH(0xDC00, 0xDFFF, 1)), X.hi=Y.hi );
+
+			t && (r.surrog += '|' + UH(X.hi) + UH(X.lo, Y.lo, 1));
+
+			// [DEL200924] Out-of-range error no longer fired.
+			// Error.runtimeError(41,__("Code point [%1 =%2%3]",(0x10000+y).toHexa('U+'),Y.hi.toHexa('\\u',4),Y.lo.toHexa('\\u',4)));
+		}
+		
+		(t=r.simple) && (6 < t.length) && (t='['+t+']');    // [ADD200925] Class only if `r.simple` has more than 6 chars.
+		r = t + r.surrog;
+		'|'===r.charAt(0) && (r=r.slice(1));
+		
+		if( !r.length ) return false;
+
+		return OUT_GLOBAL_REGEX ? (eval('(/'+r+'/g)')) : r;
+	}
+	.setup
+	({
+		UHEX: function(/*u16*/a,/*?u16*/b,/*bool=0*/BRACKETS)
+		//----------------------------------
+		// [ADD200924] Utility of `fromCodeRanges`.
+		// (1) `a` alone OR `a==b` -> `\uAAAA`
+		// (2) `a < b`             -> `\uAAAA-\uBBBB`
+		// If BRACKETS, returns `[\uAAAA-\uBBBB]` in case (2).
+		// => str
+		{
+			b = b && a < b ? ('-'+b.toHexa('\\u',4)) : '';
+			a = a.toHexa('\\u',4) + b;
+			return BRACKETS && b.length ? ( '[' + a + ']' ) : a;
+		},
+	});
+	

@@ -1,6 +1,6 @@
 ﻿function loadData(district, year, url) {
-    
-    var url = websiteUrl + url +'?d=' + encodeURIComponent(district) + '&y=' + year;
+
+    var url = url +'?d=' + encodeURIComponent(district) + '&y=' + year;
     var respond = loadJson(url);
     if (respond.result !== 'ok') {
         var message = respond.messages[0] ? respond.messages[0] : 'Something gone wrong with getting the data from the website.';

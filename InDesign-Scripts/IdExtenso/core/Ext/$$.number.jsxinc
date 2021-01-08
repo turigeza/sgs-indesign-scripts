@@ -1,0 +1,900 @@
+/*******************************************************************************
+
+		Name:           number
+		Desc:           Extends Number and Number.prototype
+		Path:           /core/Ext/$$.number.jsxinc
+		Require:        ---
+		Encoding:       ÛȚF8
+		Core:           YES
+		Kind:           Part of /Ext
+		API:     proto: toSource() toHexa() toAdbe() isAdbe()
+		                toDecimal() toIEEE754() toIEEE754_32()
+		        static: P2_M52(=2^-52) P2_M1022(=2^-1022) P2_M149(=2^-149)
+		                EPSILON  MAX_SAFE_INTEGER  MIN_SAFE_INTEGER
+		                DecimalChar ThousandsChar
+		                isInteger() isSafeInteger() flatten()
+		                parse() format() fromIEEE754() fromIEEE754_32()
+		DOM-access:     NO
+		Todo:           ---
+		Created:        170307 (YYMMDD)
+		Modified:       181016 (YYMMDD)
+
+*******************************************************************************/
+
+	//==========================================================================
+	// BACKGROUND
+	//==========================================================================
+
+	/*
+
+	[ECMA] The Number type has exactly 18,437,736,874,454,810,627 values
+	(2^64−2^53+3), representing double-precision 64-bit format IEEE 754
+	values as specified in the IEEE Standard for Binary Floating-Point
+	Arithmetic, except that the 9,007,199,254,740,990 (2^53−2) distinct
+	`Not-a-Number` values of the IEEE Standard are represented in
+	ECMAScript as a single special NaN value. (The NaN value is
+	produced by the program expression `NaN`.) In some implementations,
+	external code might be able to detect a difference between various
+	Not-a-Number values, but such behaviour is implementation-dependent;
+	to ECMAScript code, all NaN values are indistinguishable from each
+	other.
+
+	There are two other special values, called positive Infinity and
+	negative Infinity. These two infinite Number values are produced
+	by the program expressions `+Infinity` (or simply `Infinity`) and
+	`-Infinity`.
+	
+	The other 18,437,736,874,454,810,624 (2^64−2^53) values are called
+	the finite numbers. Half of these are positive numbers and half are
+	negative numbers; for every finite positive Number value there is a
+	corresponding negative value having the same magnitude.
+	
+	Note that there is both a positive zero and a negative zero. For
+	brevity, these values are also referred to for expository purposes by
+	the symbols +0 and −0, respectively. Note that these two different
+	zero Number values are produced by the program expressions +0 (or
+	simply 0) and -0.
+	
+	[REM] In ExtendScript, `+0 === -0` return true. The only way to
+	make a distinction between positive and negative zero is to
+	use a check routine looking like
+	
+	      function isNegativeZero(x) { return 0===x && (1/x < 0) }
+
+	`Number.MAX_VALUE` refers to the LARGEST POSITIVE FINITE value of
+	the Number type, which is approximately 1.7976931348623157 × 10^308.
+	ExtendScript returns `1.7976931348623157e+308`.
+	
+	`Number.MIN_VALUE` refers to the SMALLEST POSITIVE VALUE of the
+	Number type, which is approximately 5 × 10^-324 in ECMA.
+	ExtendScript returns `2.2250738585072e-308`.
+	
+	The value of `Number.NaN` is NaN. This property has the attributes
+	{ [[Writable]]:false, [[Enumerable]]:false, [[Configurable]]:false },
+	while [[global]].NaN is writable. Hence, the safest way to access
+	to NaN is to use `Number.NaN` rather than `NaN`. Alternately, one
+	can produce NaN using `+{}`. Keep in mind that
+	
+	      typeof NaN == 'number'  // NaN *is* a number!
+	      FALSE == (NaN===NaN)    // Use isNaN(x) instead!
+	      FALSE == (NaN==NaN)     // Use isNaN(x) instead!
+
+	The value of `Number.NEGATIVE_INFINITY` is −∞. This property has
+	the attributes { [[Writable]]: false, [[Enumerable]]: false,
+	[[Configurable]]: false }.
+
+	The value of `Number.POSITIVE_INFINITY` is +∞. This property has
+	the attributes { [[Writable]]: false, [[Enumerable]]: false,
+	[[Configurable]]: false }.
+	
+	[180225] ECMAScript 2015 (6th Edition, ECMA-262) introduced a few
+	static properties which ExtendScript does not provide. Here is a
+	summary:
+
+	      STATIC PROPERTY    EXTENDSCRIPT  VALUE
+	      ------------------------------------------------------------
+	      EPSILON                 KO       Math.pow(2,-52)   // 2^-52
+	      MAX_SAFE_INTEGER        KO       9007199254740991  // 2^53-1
+	      MAX_VALUE               OK       1.7976931348623158e+308
+	      MIN_SAFE_INTEGER        KO      -9007199254740991  // 2^53-1
+	      MIN_VALUE               OK       2.2250738585072014e-308
+	      NEGATIVE_INFINITY       OK      -Infinity
+	      NaN                     OK       NaN
+	      POSITIVE_INFINITY       OK      +Infinity
+	
+	IdExtenso offers a polyfill to get the missing properties available.
+	Also added for convenience are the static methods `Number.isInteger()`
+	and `Number.isSafeInteger()`.
+
+	*/
+
+	//==========================================================================
+	// IMPLEMENTATION NOTES
+	//==========================================================================
+
+	/*
+
+	While extending `Number.prototype`, never forget that `this` refers to
+	a Number object, not to a primitive (scalar) number. That is,
+	
+	      typeof this == 'object'   // not 'number'
+
+	So, tests like `this===this>>>0` will obviously fail. Use `this.valueOf()`
+	in case you need to handle a primitive number.
+
+	*/
+
+	//==========================================================================
+	// [180225] Number.EPSILON ; Number.MAX_SAFE_INTEGER ; Number.MIN_SAFE_INTEGER
+	//          as specified in ECMAScript 2015 (6th Edition, ECMA-262)
+	// [180703] Added Number.P2_M52=Math.pow(2,-52)
+	//          Distinct from EPSILON key in case EPSILON definition changes.
+	//          [REM] P2_M52 is used in various Number routines.
+	// [180704] Added Number.P2_M1022=Math.pow(2,-1022)
+	//          which likely coincides with Number.MIN_VALUE in ExtendScript
+	// [180715] Added Number.P2_M149, used in IEEE754_32 routines
+	//==========================================================================
+
+	'number' == typeof Number.P2_M52   || (Number.P2_M52   = Math.pow(2, -52));                  // 2^-52
+	'number' == typeof Number.P2_M1022 || (Number.P2_M1022 = Math.pow(2, -1022));                // 2^-1022
+	'number' == typeof Number.P2_M149  || (Number.P2_M149  = Math.pow(2, -149));                 // 2^-149 [ADD180715]
+	// ---
+	'number' == typeof Number.EPSILON  || (Number.EPSILON=Number.P2_M52);                        // 2^-52  [FIX180711]
+	'number' == typeof Number.MAX_SAFE_INTEGER || (Number.MAX_SAFE_INTEGER = 9007199254740991);  // 2^53-1
+	'number' == typeof Number.MIN_SAFE_INTEGER || (Number.MIN_SAFE_INTEGER = -9007199254740991); // -(2^53-1)
+
+	//==========================================================================
+	// [180225] Number.isInteger() --cf ECMAScript 2015 (6th Edition, ECMA-262.)
+	//==========================================================================
+
+	'function' == typeof Number.isInteger || (Number.isInteger = function isInteger(/*any*/x)
+	//----------------------------------
+	// Tell whether the passed value is an integer, that is, a finite Number being
+	// strictly equal to its rounded value. (The fastest known implementation is
+	// based on x%1===0.)
+	// ---
+	// Examples:
+	//  (123)                     => true           (.123)      => false
+	//  (0)                       => true           ("123")     => false
+	//  (-1e5)                    => true           (Math.PI)   => false
+	//  (99999999999999999999999) => true           (NaN)       => false
+	//  (1.0)                     => true           (Infinity)  => false
+	// ---                                          ([123])     => false
+	// => bool
+	{
+		// [REM] The official implementation is: typeof x === 'number'
+		// && isFinite(x) && Math.floor(x) === x
+		// We make it a bit faster by avoiding extra function calls.
+		// ---
+		return 'number' == typeof x && 0===(x%1);
+	});
+
+	//==========================================================================
+	// [180225] Number.isSafeInteger() --cf ECMAScript 2015 (6th Edition, ECMA-262.)
+	//==========================================================================
+
+	'function' == typeof Number.isSafeInteger || (Number.isSafeInteger = function isSafeInteger(/*any*/x)
+	//----------------------------------
+	// Tell whether the passed value is a 'safe integer,' that is,
+	// an integer that satisfies the two following conditions:
+	// (1) it can be exactly represented as an IEEE-754 double precision Number;
+	// (2) its IEEE-754 representation cannot be the result of rounding any other Number.
+	// [REM] For handling integers whose absolute value can be greater than
+	// Number.MAX_SAFE_INTEGER, use the BigInt module featured in the /etc branch.
+	// ---
+	// Examples:
+	//  (0)                       => true        (Math.pow(2,53))   => false
+	//  (123)                     => true        (NaN)              => false
+	//  (Math.pow(2,53)-1)        => true        (Infinity)         => false
+	//  (3.0)                     => true        ('123')            => false
+	//  (-99999)                  => true        (.123)             => false
+	//  (Number.MAX_SAFE_INTEGER) => true        (9999999999999999) => false
+	// ---
+	// => bool
+	{
+		 // [REM] The official implementation is:
+		 // Number.isInteger(x) && Math.abs(x) <= Number.MAX_SAFE_INTEGER
+		 // We make it a bit faster by avoiding extra function calls.
+		 // ---
+		 return 'number' == typeof x && 0===(x%1) && 2 == (1+x)-(-1+x);
+	});
+
+
+	//==========================================================================
+	// [180409] Number.flatten()
+	//==========================================================================
+
+	Number.flatten = function flatten(/*num|str*/x,  sgn,s,p,e,n)
+	//----------------------------------
+	// Transform the exponential representation of a number (#e#)
+	// into a decimal representation. The argument can be either
+	// a Number (e.g 1.23e-16) or a string (e.g "123.45e8").
+	// [REM] This method is useful when you need to parse an
+	// exponential representation that results from automatic
+	// Number.toString() formatting. It can also interpret `#e#`
+	// strings that represent out-of-range Numbers, e.g "12e-30".
+	// [ADD180715] Function name (`flatten`.)
+	// ---
+	// Examples:
+	//   "1e2"     => "100"      ;  "-1e-2"    => "-0.01"
+	//   ".12e3"   => "120"      ;  "-123e-5"  => "-0.00123"
+	//   "12.34e5" => "1234000"  ;  "12.34e-5" => "0.0001234"
+	//   ------------------------------------------------------
+	//   "0.000012345e15" => "12345000000"
+	//   "12.345678e-15"  => "0.000000000000012345678"
+	// 
+	// If the argument is a Number that doesn't require exponential
+	// representation, or a String that doesn't provide an exponential
+	// representation, then Number(x).toString() is returned.
+	// ---
+	// Examples:
+	//   0        => "0"         ;  -1    => "-1"
+	//   "-123"   => "-123"      ;  0.123 => "0.123"
+	//   "-.123"  => "-0.123"    ; "foo"  => "NaN"
+	//   NaN      => "NaN"       ;  "e2"  => "NaN"
+	//   Infinity => "Infinity"  ; "-Infinity" => "-Infinity"
+	// ---
+	// => str
+	{
+		if( 'number' == typeof x )
+		{
+			sgn = 0 > x ? '-' : '';
+			s = String(sgn ? -x : x);
+		}
+		else
+		{
+			s = String(x).trim();
+			'-' == (sgn=s.charAt(0)) ? (s=s.substr(1).ltrim()) : (sgn='');
+			if( isNaN(x=Number(sgn+s)) ) return String(x);
+		}
+
+		if( -1 == (p=s.indexOf('e')) ) return String(x);
+
+		e = parseInt(s.substr(1+p),10);
+		if( isNaN(e) || 0===p ) return String(Number.NaN);
+		
+		// s :: ###e###
+		// ---
+		s = s.substr(0,p).rtrim();
+		while( '0'==s.charAt(0) ) s=s.substr(1);           // 000abc -> abc
+		if( !(n=s.length) ) return '0';
+
+		if( 0 <= (p=s.indexOf('.')) )                      // p may be zero index
+		{
+			// n > p >= 0
+			// [CHG180410] A bit faster.
+			// ---
+			while( '0'==s.charAt(--n) );
+			if( !n ) return '0';
+			s = s.substr(0,p) + s.substring(1+p,1+n);      // abc.xyz000 -> abcxyz
+			e += p;
+		}
+		else
+		{
+			e += n;
+		}
+
+		if( 0 >= e )
+		{
+			return sgn + '0.' + (e ? Array(1-e).join('0') : '') + s;
+		}
+
+		if( n <= e )
+		{
+			s += (n < e ? Array(1+e-n).join('0') : '');
+			while( '0'==s.charAt(0) ) s=s.substr(1);
+		}
+		else
+		{
+			s = s.substr(0,e) + '.' + s.substr(e);
+			while( '0'==s.charAt(0) && '.' != s.charAt(1) ) s=s.substr(1);
+		}
+
+		return sgn + s;
+	};
+
+	//==========================================================================
+	// [180412] Number.DecimalChar ; Number.ThousandsChar
+	//==========================================================================
+
+	// Below are basic i18n adjustments, based on the fact that
+	// $.decimalPoint (ExtendScript) is already localized. It's
+	// just a simplification though, since only two distinct
+	// number formats are implied: `123,456.78`  vs. `123 456,78`
+	// For a fine-tuned localization, implement specific modules
+	// and provide explicit arguments to `parse` and `format`.
+	// ---
+	Number.DecimalChar = $.decimalPoint || '.';
+	Number.ThousandsChar = '.'==Number.DecimalChar ? ',' : ' ';
+	
+	//==========================================================================
+	// [180412] Number.parse() ; Number.format()
+	//==========================================================================
+	
+	Number.parse = function parse(/*str*/s,/*str=auto*/decimal,  p)
+	//----------------------------------
+	// Enhanced parseFloat routine that supports custom decimal point.
+	// ---
+	// Examples:
+	// Number.parse("12.34")         => 12.34
+	// Number.parse("12,345.67",".") => 12345.67
+	// Number.parse("12,34",",")     => 12.34
+	// ---
+	// => Number
+	{
+		p = ('undefined'==typeof decimal ? Number.DecimalChar : String(decimal)).charAt(0);
+
+		'.' != p && -1==s.indexOf(p) && 0 <= s.indexOf('.') && (p='.');
+		s = String(s).stripSpaces().replace(RegExp("[^\\d\\"+p+"-]+",'g'),'');
+		'.' != p && 0 <= (p=s.indexOf(p)) && (s=s.substr(0,p)+'.'+s.substr(1+p));
+
+		return parseFloat(s);
+	};
+	
+	Number.format = function format(/*num|str*/x, /*-20..20=0*/digits,/*str=auto*/decimal,/*str=auto*/thousands,  p,d)
+	//----------------------------------
+	// Format a number using grouped thousands and custom decimal point.
+	// Supports negative `digits` parameter as specified in `toDecimal`.
+	// ---
+	// Examples:
+	// Number.format(1234.56)                 => "1,235"
+	// Number.format(1234.5678, 2, ".", "")   => "1234.57"
+	// Number.format(1234.56, -3, ",", " ")   => "1 234,56"
+	// Number.format(67, 2, ",", ".")         => "67,00"
+	// Number.format(1000)                    => "1,000"
+	// Number.format(67.311, 2)               => "67.31"
+	// Number.format(1000.55, 1)              => "1,000.6"
+	// Number.format(67000, 5, ",", ".")      => "67.000,00000"
+	// Number.format(0.9, 0)                  => "1"
+	// Number.format("1.20", 2)               => "1.20"
+	// Number.format("1.20", 4)               => "1.2000"
+	// Number.format("1.2000", 3)             => "1.200"
+	// Number.format("1 000,50", 2, ".", " ") => "100 050.00"
+	// ---
+	// => str
+	{
+		decimal = 'undefined'==typeof decimal ? Number.DecimalChar : String(decimal);
+		thousands = 'undefined'==typeof thousands ? Number.ThousandsChar : String(thousands);
+		
+		'number' == typeof x || (x=Number.parse(x,decimal));
+
+		x = x.toDecimal(digits);
+		p = x.indexOf('.');
+		d = 0 <= p ? (decimal + x.substr(1+p)) : '';
+		0 <= p && (x=x.substr(0,p));
+		
+		thousands && 3 < x.length
+		&& (x=x.replace(callee.RE||(callee.RE=/\B(?=(?:\d{3})+(?!\d))/g),thousands));
+		
+		return x + d;
+	};
+
+
+	//==========================================================================
+	// Number.prototype.toSource()
+	//==========================================================================
+
+	Number.prototype.toSource = function toSource(/*-1=COMPACT|0=SHORT|+1=NATIVE=0*/mode,  x,s,neg)
+	//----------------------------------
+	// [CHG180721] Variant of `toString` that supports three modes:
+	//   +1 :: Native toString() output.
+	//    0 :: (Default.) As toString(), except leading zero is removed
+	//         from floating-point number: 0.5 -> ".5" ; -0.75 -> "-.75"
+	//   -1 :: Compact mode [TODO]. Select the shortest literal representation
+	//         of this number: 10000 -> "1e4"
+	// [ECMA] "If x is any Number value other than -0, then ToNumber(ToString(x))
+	// is exactly the same Number value as x." The `toSource()` method offers
+	// the same guarantees: `x===Number(x.toSource())` (unless x be NaN.)
+	// => str
+	{
+		s = (x=this.valueOf()).toString();
+		if( 0 < mode ) return s;
+
+		// Remove leading zero from floating value in )-1,1(
+		// ---
+		neg = +(0>x);
+		x && -1 < x && x < 1 && '0'==s.charAt(neg) && (s=(neg?s.charAt(0):'')+s.substr(1+neg));
+		if( !mode ) return s;
+
+		// [TODO] Try to output the most compact result (10000 -> "1e5")
+		// ---
+		return s;
+	};
+
+	//==========================================================================
+	// Number.prototype.toHexa() ; Number.prototype.toAdbe() ; Number.prototype.isAdbe()
+	//==========================================================================
+
+	Number.prototype.toHexa = function toHexa(/*str='0x'*/prefix,/*uint=0*/zeroPad,  s)
+	//----------------------------------
+	// Return the hexadecimal representation of this number. (Uppercase hexa digits.)
+	// [FIX171125] isFinite test is better.
+	// [ADD170423] `prefix`   If provided (string), reset the prefix (default is "0x").
+	// [ADD170423] `zeroPad`  If > 0, minimum length of the hexa representation.
+	// [CHG181016] Corrected typo in examples below.
+	// ---
+	// E.g  (123456).toHexa()        => "0x1E240"
+	// E.g  (123456).toHexa("U+")    => "U+1E240"
+	// E.g  (123).toHexa("")         => "7B"
+	// E.g  (123).toHexa("", 4)      => "007B"
+	// => str
+	{
+		if( !isFinite(this) ) return String(this);
+
+		( 'string' == typeof prefix ) || (prefix='0x');
+		( 'number' == typeof zeroPad && 0 < (zeroPad >>>= 0) ) || (zeroPad=0);
+		
+		s = this.toString(16).toUpperCase();
+		
+		return prefix +
+			( zeroPad && 0 < (zeroPad-=s.length) ? Array(1+zeroPad).join('0') : '' ) +
+			s;
+	};
+
+	Number.prototype.toAdbe = function toAdbe(  x)
+	//----------------------------------
+	// Return the Adobe Tag (string) that this number encodes.
+	// If `this` is not finite, return String(this).
+	// [REM] If `this` is not an actual Adobe Tag ID (cf. isAdbe)
+	// the function still considers it as so and takes this>>>0.
+	// So the caller is responsible for checking `x.isAdbe()` if
+	// necessary.
+	// ---
+	// E.g  0x414F5069 => "AOPi" ; 0x74787466 => "txtf" ;
+	//      123 => "\0\0\0{" -- since 123==0x7B and "\x7B"=="}"
+	// ---
+	// => str
+	{
+		return isFinite(x=this.valueOf()) ?
+			String.fromCharCode( 0xFF&(x>>>24), 0xFF&(x>>>16), 0xFF&(x>>>8), 0xFF&(x>>>0) ) :
+			String(this);
+	};
+
+	Number.prototype.isAdbe = function isAdbe(  x)
+	//----------------------------------
+	// Whether this Number is an Adobe Tag ID, that is,
+	// an uint32 whose hex string has exactly 8 digits.
+	// (More accurately, 0xWWXXYYZZ is an Adobe Tag ID if the
+	// string WWXXYYZZ matches /[ a-zA-Z0-9]{4}/, but the present
+	// implementation does not perform a so restrictive test.)
+	// ---
+	// [FIX171125] Added uint32 test.
+	// ---
+	// E.g  1114394470 => 1    ;    12345 => 0
+	//  ie  0x426C4F66 [OK]        0x3039 [KO]
+	// ---
+	// => 0 | 1
+	{
+		return +(
+			(x=this.valueOf())===x>>>0 &&
+			8==(x=this.toString(16).toUpperCase()).length &&
+			RegExp.ADBE.test(x)
+			);
+	};
+
+	//==========================================================================
+	// [ADD180410] Number.prototype.toDecimal()
+	//==========================================================================
+
+	/*
+
+	The main problem with `toFixed` is rounding errors:
+
+	      (1.265).toFixed(2) => 1.26 [KO]
+	while
+	      (1.235).toFixed(2) => 1.24 [OK]
+
+	[ECMA] "Let n be an integer for which the exact mathematical value of
+	`n/(10^digits)–x` is as close to zero as possible. If there are two such n, pick
+	the *larger* n." In short, ECMA expects n=Math.round(x*10^digits). However,
+	internal rounding error may occur at this step. Indeed, let x=1.265 and
+	digits=2. Let Y=x*(10^digits) -- which should be 126.5. Let UP=Math.ceil(Y)=127
+	and DOWN=Math.floor(Y)=126. Due to IEEE754 encoding, we actually get:
+
+	      UP - Y      =>  0.50000000000001
+	      Y - DOWN    =>  0.49999999999999
+
+	So DOWN is considered closer than UP (although theoretically equal) and `floor`
+	is then preferred over `ceil`, which brings
+
+	      (1.265).toFixed(2) =>  1.26  [should be 1.27]
+	
+	The `toDecimal` method provides a fix based on parsing the string representation
+	of the considered number.
+
+	*/
+
+	Number.prototype.toDecimal = function toDecimal(/*int(-20..+20)=0*/digits,  fx,x,sgn,s,p,q,n)
+	//----------------------------------
+	// Variant of `toFixed` that fixes rounding issues *as accurately as possible*.
+	// Return a String representation of this Number in decimal notation (#.#).
+	// E.g, (1.265).toDecimal(2) -> "1.27" (while `toFixed` would output "1.26".)
+	// (a) If `digits > 0`, use a fixed-point notation with EXACTLY
+	//     `digits` digits after the decimal point.
+	//     E.g  (1.23).toDecimal(3)    -> "1.230"    // padding
+	//          (1.2345).toDecimal(3)  -> "1.235"    // rounding
+	// (b) If `digits < 0`, use AT MOST `|digits|` digits,
+	//     removing non-signifiant zero(es).
+	//     E.g  (1.23).toDecimal(-3)   -> "1.23"     // removing ending zeroes
+	//          (1.2345).toDecimal(-3) -> "1.235"    // rounding
+	// (c) If `digits==0` (or undefined), return the String
+	//     representation of the rounded value.
+	// ---
+	// Calling this function with |this| >= 10^21 or |digits| > 20 is considered
+	// invalid, although we then use `toFixed` as a fallback routine.
+	// ---
+	// Examples:
+	//         (1.265).toDecimal(2)    => "1.27"
+	//         (325.3).toDecimal(2)    => "325.30"
+	//         (-12.6).toDecimal(0)    => "-13"
+	//        (1.9955).toDecimal(1)    => "2.0"
+	//        (1.2345).toDecimal(4)    => "1.2345"
+	//        (1.2345).toDecimal(3)    => "1.235"
+	//        (1.2345).toDecimal(2)    => "1.23"
+	//        (12.395).toDecimal(-2)   => "12.4"
+	//       (-12.345).toDecimal(-5)   => "-12.345"
+	//    (-1.2355e-7).toDecimal(2)    => "0.00"
+	//    (-1.2355e-7).toDecimal(-2)   => "0"
+	//   (1.235555e-7).toDecimal(9)    => "0.000000124"
+	// ---
+	// => str
+	{
+		// Treat non-finite numbers as `toFixed` would do.
+		// ---
+		if( !isFinite(this) ) return this.toFixed();
+
+		// Coerce `digits` into int.
+		// ---
+		digits|=0;
+		
+		// fx :: 1 [FIXED>0]  |  0 [FLOATING|0]
+		// ---
+		fx = +(0 < digits) || ((digits=-digits),0);
+
+		// Treat out-of-range `digits` as `toFixed` would do.
+		// [REM] ExtendScript supports digits > 20 (up to 100)
+		// but this does not make sense since the underlying
+		// number cannot be handled at such precision.
+		// ---
+		if( 20 < digits ) return this.toFixed(digits);
+
+		// Sign.
+		// ---
+		x = this.valueOf();
+		sgn = 0 > x ? ((x=-x),'-') : '';
+
+		// Treat magnitude >= 10^21 as `toFixed` would do.
+		// ---
+		if( x >= 1e21 ) return this.toFixed(digits);
+
+		// Use the decimal representation of x.
+		// ---
+		0 <= (s=String(x)).indexOf('e') && (s=Number.flatten(s));
+
+		while( 1 )
+		{
+			if( -1 == (p=s.indexOf('.')) )
+			{
+				// No decimal point -> integer case.
+				// ---
+				fx && (s += '.' + Array(1+digits).join('0'));
+				break;
+			}
+
+			q = 1 + p + digits;
+			n = s.length;
+
+			if( n <= q )
+			{
+				// "abc.xyz" -> "abc.xyz0"
+				//     p   q
+				// ---
+				fx && (n < q) && (s+= Array(1+q-n).join('0'));
+				break;
+			}
+
+			if( 0x35 > s.charCodeAt(q) )
+			{
+				// "abc.xyz4www" -> "abc.xyz"
+				//     p   q  n
+				// ---
+				digits || --q;
+				s = s.substr(0,q);
+				if( fx || !digits ) break;
+				while( '0'==s.charAt(--q) );
+				s = s.substr(0, p < q ? (1+q) : p);
+				break;
+			}
+
+			while( '9' == s.charAt(--q) );
+			if( p < q )
+			{
+				// "abc.xy799" -> "abc.xy800"
+				//     p  q  n
+				// ---
+				s = s.substr(0,q) + (s.charCodeAt(q)-0x2F);
+				fx && (s+=Array(1+p+digits-q).join('0'));
+				break;
+			}
+
+			// Rounded to integer: abc.999 = (1+abc).000
+			// ---
+			while( '9' == s.charAt(--q) );
+			s = 0 <= q ? (s.substr(0,q) + (s.charCodeAt(q)-0x2F)) : '1';
+			s += Array(p-q).join('0');
+			fx && (s += '.' + Array(1+digits).join('0'));
+			break;
+		}
+
+		sgn && ('0'==s || (callee.RE||(callee.RE=/^0\.0+$/)).test(s) ) && (sgn='');
+
+		return sgn + s;
+	};
+
+	//==========================================================================
+	// [180704] Number.fromIEEE754() ; Number.prototype.toIEEE754()
+	// [180715] Number.fromIEEE754_32() ; Number.prototype.toIEEE754_32()
+	// [REM] Tests can be done from <binaryconvert.com/result_double.html>
+	//       and <www.h-schmidt.net/FloatConverter/IEEE754.html> (single)
+	//==========================================================================
+
+	Number.fromIEEE754 = function fromIEEE754(/*hex(16)*/hex,  e,m,s)
+	// -------------------------------------
+	// [180704] Fast and compact IEEE754 decoder (double-precision
+	// 64-bit format) that returns the number represented by `hex`.
+	// `hex` :: the hex string to decode (should have 16 characters)
+	// ---
+	// E.g. Number.fromIEEE754('405EDD2F1A9FBE77') => 123.456
+	//      Number.fromIEEE754('A7F6A2FEC16CBD42') => -3.59066421145637e-116
+	//      Number.fromIEEE754('7FF38CC71C9330DF') => NaN
+	//      Number.fromIEEE754('7FF0000000000000') => Infinity
+	//      Number.fromIEEE754('8000000000000000') => -0
+	// ---
+	// => Number ; function's STATUS is set to either  0 (NaN or ±Infinity)
+	//                                                -1 (±Zero or Denormalized)
+	//                                                +1 (Normalized)
+	{
+		// Make sure the input has the desired hex(16) format.
+		// ---
+		16 == hex.length || (hex=('0000000000000000'+hex).substr(-16));
+
+		// Pre-compute exponent/mantissa/sign
+		// ---
+		e = Number('0x'+hex.substr(0,3));                   // 0xHHH     (3 digits)  , 12 bits (=1+11)
+		m = Number('0x'+hex.substr(-13));                   // 0xHH...HH (13 digits) , 52 bits
+		s = (0x800&e) ? ((e&=0x7FF),-1) : 1;                // ±1
+		
+		// Reflect the state of the number being computed:
+		// 0:NaN-or-Infinity ; 1:Normalized ; -1:Zero-or-Denormalized
+		// ---
+		// The client code can read `Number.fromIEEE754.STATUS` for
+		// advanced processing (e.g, excluding denormalized result etc.)
+		// ---
+		callee.STATUS = (0x7FF!=e)*(e?1:-1);
+
+		// Result.
+		// [REM] If the expression is denormalized (e==0 && m>0)
+		// the formal result is ± 2^(1-bias)*m*2^(-mBits), that
+		// is, ± m*2^(1-bias-mBits) -- where bias=1023, mBits=52.
+		// However, we cannot use the factor 2^(1-bias-mBits),
+		// as it equals 2^-1074 (≈5e-324), which is lower than
+		// Number.MIN_VALUE (≈2e-308) in ExtendScript. So it is
+		// required to keep the original form 2^(1-1023)*m*2^(-52)
+		// I suspect that Number.MIN_VALUE *is* 2^(-1022).
+		// I also suspect that ExtendScript doesn't properly
+		// address denormalized numbers... [TOCHECK]
+		// ---
+		return s*                                           // Sign ; work with Inf, NaN, and 0 :-)
+		(
+			0x7FF == e ? ((!m)/0) :                         // NaN or Infinity  ; e==(1<<eBits)-1
+			( e ?                                           // [REM] bias=0x3FF=1023 ; mBits=52
+			  Math.pow(2,e-0x3FF)*(1+m*Number.P2_M52) :     // Normalized:  2^(e-bias)*(1 + m*2^(-mBits))
+			  ( m && (m*Number.P2_M1022)*Number.P2_M52 )    // 0 or denorm: 2^(1-bias)*     m*2^(-mBits)
+			)
+		);
+	};
+
+	Number.prototype.toIEEE754 = function toIEEE754(  v,s,m,e)
+	// -------------------------------------
+	// [180704] Fast and compact IEEE754 encoder (double-prevision
+	// 64-bit format) that returns the representation of this value
+	// as a hex string formed of 16 characters, uppercase.
+	// `this` :: the Number to encode (incl. NaN, Infinity, -0)
+	// ---
+	// [REM] A possible DOM-based implementation would be to return
+	// `app.transformationMatrices.add({matrixValues:[1,0,0,1,
+	// +this,0]}).name.split(' ')[5]` but this would make the
+	// routine DOM-dependent and requiring a non-modal context.
+	// This trick, however, might be used for checking purpose,
+	// as shown in `/tests/CheckIEEE754.jsx`.
+	// ---
+	// E.g.  (123.456).toIEEE754()               => '405EDD2F1A9FBE77'
+	//      (-3.59066421145637e-116).toIEEE754() => 'A7F6A2FEC16CBD42'
+	//      (0/0).toIEEE754()                    => '7FF8000000000000' ; 1st positive QNaN
+	//      (-1/0).toIEEE754()                   => 'FFF0000000000000' ; -Infinity
+	//      (-0).toIEEE754()                     => '8000000000000000' ; Negative Zero
+	// ---
+	// => hex(16) ; function's STATUS is set to either  0 (NaN or ±Infinity)
+	//                                                 -1 (±Zero or Denormalized)
+	//                                                 +1 (Normalized)
+	{
+		v = this.valueOf();
+
+		// [REM] According to <reddit.com/r/javascript/comments/7jr4pv/
+		// binary_representation_of_nan/>, "JavaScript appears to always
+		// generate a QNaN" (Quiet-NaN). Also, as noted in <perlmonks.org/
+		// ?node_id=984141>, 18,442,240,474,082,181,117 distinct forms are
+		// "used to represent quiet NANs. Half positive; half-1 negative."
+		// The present implementation then outputs the representation of the
+		// 1st positive QNaN (that is, `7FF8000000000000`) keeping in mind
+		// that this choice is arbitrary.
+		// ---
+		if( isNaN(v) )     return (callee.STATUS=0),
+			'7FF8000000000000';
+		if( !isFinite(v) ) return (callee.STATUS=0),
+			(0 < v     ? '7' : 'F') + 'FF0000000000000';
+		if( 0 == v )       return (callee.STATUS=-1),
+			(0 < (1/v) ? '0' : '8') + '000000000000000';
+
+		// s :: 0x800 (neg) | 0x000 (pos)
+		// ---
+		s = 0 > v ? (v=-v,0x800) : 0;
+		
+		if( Number.P2_M1022 <= v )
+		{
+			// We have: 2^(-1022) <= v  ->  -1022 <= (e=ln2(v))
+			// Assert:  e <= 1023 ;   [KO] ... is out of range
+			// ---
+			0x3FF < (e=Math.floor(Math.log(v)/Math.LN2)) && Error.runtimeError(41,e);
+			
+			// So far: -1022 <= e <= 1023
+			// ---
+			m = (-1+v*Math.pow(2,-e))/Number.P2_M52;
+
+			// We'll then get:
+			// 1 <= (e+=1023) <= 2046 ; i.e  1 <= e <= 0x7FE
+			// ---
+			e += 0x3FF;
+
+			callee.STATUS = 1;  // NORMALIZED
+		}
+		else
+		{
+			m = (v/Number.P2_M1022)/Number.P2_M52;
+			e = 0;
+
+			callee.STATUS = -1;  // DENORMALIZED
+		}
+
+		// Pack (sign,exponent,mantissa) => hex16
+		// ---
+		return (
+			( '000'+(s|e).toString(16) ).substr(-3) +
+			( '0000000000000'+m.toString(16) ).substr(-13)
+		).toUpperCase();
+	};
+
+	/*
+
+	Regarding 32bit routines the general contract is to guarantee the
+	hex-to-Number conversion, and the equality
+
+	      hex8 === (Number.fromIEEE754_32(hex8)).toIEEE754_32()
+
+	But the routines *cannot guarantee* for any Number `x`
+	
+	      x === Number.fromIEEE754_32(x.toIEEE754_32())  // NOT TRUE!
+
+	since `x` is internally encoded in double-precision representation.
+
+	*/
+
+	Number.fromIEEE754_32 = function fromIEEE754_32(/*hex(8)*/hex,  e,m,s)
+	// -------------------------------------
+	// [180715] Fast and compact IEEE754 decoder (single-precision
+	// 32-bit format) that returns the number represented by `hex`.
+	// `hex` :: the hex string to decode (should have 8 characters)
+	// ---
+	// [REM] "If a decimal string with at most 6 significant digits
+	// is converted to IEEE 754 single-precision representation, and
+	// then converted back to a decimal string with the same number
+	// of digits, the final result should match the original string."
+	// ---
+	// E.g. Number.fromIEEE754_32('3F800000') => 1
+	//      Number.fromIEEE754_32('C0000000') => -2
+	//      Number.fromIEEE754_32('7F7FFFFF') => 3.402823(46638529)e+38 ; max finite positive value
+	//      Number.fromIEEE754_32('00800000') => 1.175494(35082229)e-38 ; min normalized positive value
+	//      Number.fromIEEE754_32('80000000') => -0
+	//      Number.fromIEEE754_32('FF800000') => -Infinity
+	//      Number.fromIEEE754_32('40490FDB') => 3.14159274101257
+	//      Number.fromIEEE754_32('FFC00001') => NaN ; Quiet-NaN
+	// ---
+	// => Number ; function's STATUS is set to either  0 (NaN or ±Infinity)
+	//                                                -1 (±Zero or Denormalized)
+	//                                                +1 (Normalized)
+	{
+		8 == hex.length || (hex=('00000000'+hex).substr(-8));
+		e = Number('0x'+hex.substr(0,3))>>>3;               // 0xHHH >>> 3 ; 12-3 = 9 bits (1+8)
+		m = Number('0x'+hex.substr(-6))&0x7FFFFF;           // 0xHHHHHH & 0x7FFFFF ; 23 bits
+		s = (0x100&e) ? ((e&=0xFF),-1) : 1;                 // ±1
+		
+		callee.STATUS = (0xFF!=e)*(e?1:-1);
+
+		return s*                                           // Sign ; work with Inf, NaN, and 0 :-)
+		(
+			0xFF == e ? ((!m)/0) :                          // NaN or Infinity  ; e==(1<<eBits)-1
+			( e ?                                           // [REM] bias=0x7F=127 ; mBits=23
+			  Math.pow(2,e-127)*(1+m/0x800000) :           // Normalized:  2^(e-bias)*(1 + m*2^(-mBits))
+			  ( m && (m*Number.P2_M149) )                   // 0 or denorm: 2^(1-bias)*     m*2^(-mBits)
+			                                                //         i.e  m*2^(-126-23) = m*2^-149
+			)
+		);
+	};
+
+	Number.prototype.toIEEE754_32 = function toIEEE754_32(  v,s,m,e)
+	// -------------------------------------
+	// [180715] Fast and compact IEEE754 encoder (single-prevision
+	// 32-bit format) that returns the representation of this value
+	// as a hex string formed of 8 characters, uppercase.
+	// `this` :: the Number to encode (incl. NaN, Infinity, -0)
+	// ---
+	// [REM] "If an IEEE 754 single-precision number is converted to
+	// a decimal string with at least 9 significant digits, and then
+	// converted back to single-precision representation, the final
+	// result must match the original number."
+	// ---
+	// E.g.  (123.456).toIEEE754_32()               => '42F6E979'
+	//       (1234567).toIEEE754_32()               => '4996B438'
+	//       (0/0).toIEEE754_32()                   => '7FC00000'
+	//       (-1/0).toIEEE754_32()                  => 'FF800000' ; -Infinity
+	//       (-0).toIEEE754_32()                    => '80000000' ; Negative Zero
+	// ---
+	// => hex(8) ; function's STATUS is set to either  0 (NaN or ±Infinity)
+	//                                                -1 (±Zero or Denormalized)
+	//                                                +1 (Normalized)
+	{
+		v = this.valueOf();
+		if( isNaN(v) )     return (callee.STATUS=0),  '7FC00000';
+		if( !isFinite(v) ) return (callee.STATUS=0),  (0 < v     ? '7' : 'F') + 'F800000';
+		if( 0 == v )       return (callee.STATUS=-1), (0 < (1/v) ? '0' : '8') + '0000000';
+
+		// s :: b100..00 (neg) | 0 (pos)
+		// ---
+		s = 0 > v ? (v=-v,0x80000000) : 0;
+		
+		// e :: ln2(v)
+		// ---
+		e = Math.floor(Math.log(v)/Math.LN2);
+
+		if( -126 <= e )
+		{
+			m = 0x800000*(-1+v*Math.pow(2,-e));
+			e += 127;
+		}
+		else
+		{
+			// Too small for a float(32) -> underflow to zero.
+			// ---
+			if( -152 >= e ) return (callee.STATUS=-1), (s ? '8' : '0') + '0000000';
+			
+			m = v/Number.P2_M149;
+			e = 0;
+		}
+
+		// Round mantissa.
+		// [REF] github.com/andrasq/node-ieee-float/blob/master/index.js
+		// ---
+		( (1&m) || .5 !== (m-Math.floor(m)) ) && (m+=.5);
+		0x800000 <= m && (m-=0x800000, ++e);
+
+		// Too large for a float(32) -> overflow to Infinity.
+		// ---
+		if( 254 < e ) return (callee.STATUS=0), (s ? 'F' : '7') + 'F800000';
+
+		callee.STATUS = e ? 1 : -1;  // DENORMALIZED
+
+		// Pack (sign,exponent,mantissa) => hex8
+		// ---
+		v = (s | (e<<23) | m) >>> 0;
+		return ('00000000'+v.toString(16).toUpperCase()).substr(-8);
+	};

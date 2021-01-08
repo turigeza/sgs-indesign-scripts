@@ -1,0 +1,877 @@
+/*******************************************************************************
+
+		Name:           Space
+		Desc:           Simplified management of InDesign coordinate systems.
+		Path:           /etc/$$.Dom.Space.jsxlib
+		Require:        ---
+		Encoding:       ÛȚF8
+		Core:           NO
+		Kind:           Module.
+		API:            =convert() fromXY() fromUV() fromRL() fromCustom()
+		                           intoXY() intoUV() intoRL()
+		                preScale() matrixValues()
+		                -> MasterSpread.prototype.resolve() [CS4]
+		DOM-access:     YES (Enums ; obj.resolve)
+		Todo:           Page inner box and page CS may not coincide (cf CS&T, Fig. 18)
+		Created:        180606 (YYMMDD)
+		Modified:       190722 (YYMMDD)
+
+*******************************************************************************/
+
+;$$.Dom.hasOwnProperty('Space') || eval(__(MODULE, $$.Dom.toSource(), 'Space', 190722, 'convert'))
+
+	//==========================================================================
+	// NOTICE
+	//==========================================================================
+
+	/*
+
+	The primary purpose of this module is to hide the subtleties of the generic
+	`<DOM>.resolve()` method which allows to handle and convert locations in
+	InDesign coordinate systems. The native `<DOM>.resolve()` function has many
+	possible formal parameters. Although very powerful, most are unknown from
+	script developers due to their deep complexity.
+
+	InDesign addresses three kinds of coordinate systems, as detailed in
+	<http://indiscripts.com/tag/CST>. These are:
+
+	(1) Regular Coordinate Spaces (CS) attached to DOM objects (pasteboard,
+	    spread, page, parent and inner spaces.)
+
+	(2) Bounding Box Spaces (BS) with respect to a DOM object bounding box
+	    seen in the perspective of a CS. (Keep in mind that a same object
+	    has multiple associated bounding boxes depending on the CS under
+	    consideration.)
+	
+	(3) Rulers Space (RS), which reflects the GUI coordinates. It depends on
+	    various preferences, in particular custom units, `Document.zeroPoint`,
+	    `ViewPreference.rulerOrigin`, `DocumentPreference.facingPages`, and
+	    of course the specific page geometry involved at some location.
+
+	DOM methods usually expect and produce RS coordinates (e.g, path points)
+	but we'd often want to access more reliable (CS) or more practical (BS)
+	coordinate systems, as they are more closely connected to transform states.
+	
+	The present module provides tools for managing and converting coordinates
+	from any system into any other. The `from..` methods allow to specify a
+	source space for incoming coordinates, the `into..` methods allow to specify
+	a destination space for output coordinates. Then the `convert` method
+	efficiently computes data with respect to the specified input/output systems.
+	
+	Note that `from..` and `into..` methods both return a reference to the module
+	itself, which allows nested calls as follows:
+	
+	      `$$.Dom.Space.fromXY(...).intoRL(...).convert(input,output)`
+
+	*/
+
+	//==========================================================================
+	// ENUMERATORS
+	//==========================================================================
+
+	[PRIVATE]
+
+	({
+
+		// Coordinate spaces.
+		// ---
+		csIN: +CoordinateSpaces.INNER_COORDINATES,
+		csPR: +CoordinateSpaces.PARENT_COORDINATES,
+		csPG: $$.idVersion(8) ? +CoordinateSpaces.PAGE_COORDINATES : 0,
+		csSP: +CoordinateSpaces.SPREAD_COORDINATES,
+		csPB: +CoordinateSpaces.PASTEBOARD_COORDINATES,
+		
+		// Bounding Box Limits.
+		// ---
+		bGEO: +BoundingBoxLimits.GEOMETRIC_PATH_BOUNDS,
+		bVSB: +BoundingBoxLimits.OUTER_STROKE_BOUNDS,
+		
+		// Anchor points.
+		// ---
+		apBC: +AnchorPoint.BOTTOM_CENTER_ANCHOR,
+		apBL: +AnchorPoint.BOTTOM_LEFT_ANCHOR,
+		apBR: +AnchorPoint.BOTTOM_RIGHT_ANCHOR,
+		apCC: +AnchorPoint.CENTER_ANCHOR,
+		apLC: +AnchorPoint.LEFT_CENTER_ANCHOR,
+		apRC: +AnchorPoint.RIGHT_CENTER_ANCHOR,
+		apTC: +AnchorPoint.TOP_CENTER_ANCHOR,
+		apTL: +AnchorPoint.TOP_LEFT_ANCHOR,
+		apTR: +AnchorPoint.TOP_RIGHT_ANCHOR,
+		// --- [ADD180609]
+		AP2S: eval(AnchorPoint.revSource().replace(/_ANCHOR$/g,'')),    // { 1095656035:"BOTTOM_CENTER", 1095656044:"BOTTOM_LEFT", etc }
+		APUV: function(/*uint|AnchorPointEnum*/ap)
+		//----------------------------------
+		// (AnchorPoint-To-UV.)
+		// => [u,v]&
+		{
+			return callee[this.AP2S[+ap]];
+		}
+		.setup({
+			BOTTOM_CENTER: [.5, 1],
+			BOTTOM_LEFT:   [ 0, 1],
+			BOTTOM_RIGHT:  [ 1, 1],
+			// ---
+			CENTER:        [.5,.5],
+			LEFT_CENTER:   [ 0,.5],
+			RIGHT_CENTER:  [ 1,.5],
+			// ---
+			TOP_CENTER:    [.5, 0],
+			TOP_LEFT:      [ 0, 0],
+			TOP_RIGHT:     [ 1, 0],
+		}),
+
+	})
+
+	//==========================================================================
+	// COMPATIBILITY PATCHES
+	//==========================================================================
+	
+	/*
+
+	In CS4:
+	- Regular spreads can be transformed, while pages cannot.
+	- MasterSpreads have neither `resolve` nor `transform` methods
+	  (although the user can rotate master spread view.)
+	- Every page (incl. mastered) have both `resolve` and `transformValuesOf`
+	  methods.
+
+	The problem is to get the inner box of a master spread in order to fully
+	implement `MasterSpread.prototype.resolve` when used with UV coordinates
+	or rulers coordinates involving UV location. The inner box of a spread
+	always includes some room around the pages, so we cannot just use page
+	boxes to compute the whole spread area.
+
+	Given a MasterSpread MS, we have the following options:
+	
+	   1. SPACE LOCATION.
+	   ---------------------------------------------------------------
+	      MS.resolve( [ [X,Y], <space> ], <destSpace> )
+	   ---------------------------------------------------------------
+	   is equivalent to
+	      MS.pages[0].resolve( [ [X,Y], <subst> ], <subst> )
+	   with the following substitution table:
+	      <space> | <destSpace>        <subst>
+	      INNER                        PARENT
+	      PARENT                       PASTEBOARD
+	      SPREAD                       SPREAD
+	      PASTEBOARD                   PASTEBOARD
+
+	   2. BOX LOCATION.
+	   ---------------------------------------------------------------
+	      MS.resolve( [ [U,V]|Anchor, <boxLimits>, <space> ], <destSpace> )
+	   ---------------------------------------------------------------
+	   Here the idea is to first express the location relative to the spread
+	   space (-> x,y) then to use
+	      MS.pages[0].resolve( [ [x,y], PARENT ], <subst> )
+	   Since all spreads have the same inner space and inner box geometry
+	   in CS4--whatever the particular transformation they undergo--, we
+	   can invoke `MS.parent.spreads[0].resolve(<location>, INNER)` to
+	   get x,y.
+
+	   3. RULER LOCATION.
+	   ---------------------------------------------------------------
+	   a) MS.resolve( [ [rx,ry], PAGE_INDEX ], <destSpace>, rulerUnits )
+	   b) MS.resolve( [ [rx,ry], [U,V]|Anchor, ... ], <destSpace>, rulerUnits )
+	   ---------------------------------------------------------------
+	   In case a) we can simply invoke
+	      MS.pages[0].resolve( [ [rx,ry], PAGE_INDEX ], <subst>, rulerUnits )
+	   since there is nothing specific to the spread in that syntax.
+	   ---
+	   In case b) we need to express the spread-UV location in terms of
+	   pages[0]-UV location (-> pu,pv), in order to use the syntax
+	      MS.pages[0].resolve( [ [rx,ry], [pu,pv] ], <subst>, rulerUnits )
+	   To get (pu,pv) from (U,V) we proceed as follows:
+	      - Get (Xu,Yv) the spread coordinates of (U,V) location using
+	        MS.parent.spreads[0].resolve( [U,V], INNER );
+	      - Get (Xl,Yt) the spread coordinates of pages[0] TOP-LEFT using
+	        MS.pages[0].resolve( TOP_LEFT, PARENT );
+	      - Get (Xr,Yb) the spread coordinates of pages[0] BOT-RIGHT using
+	        MS.pages[0].resolve( BOT_RIGHT, PARENT );
+	      - Noting that in CS4 pages are only *translated* relative to their
+	        parent spread, we have
+	        pu = (Xu-Xl)/(Xr-Xl) ; pv = (Yv-Yt)/(Yb-Yt)
+	        which solves the problem.
+
+	*/
+
+	[PRIVATE]
+	
+	({
+		MCS4: (!$$.idVersion(7)) && function resolve(/*any*/location,/*uint|SpaceEnum*/destSpace,/*?bool*/rulerUnits,  I,sbs,xy,uv,ru,s,i,t,lt,rb)
+		//----------------------------------
+		// (MasterSpread-Resolve-CS4.) [ADD180609] `this` :: MasterSpread
+		// In CS4 MasterSpread does not support resolve. This patch makes it available.
+		// --> MasterSpread.prototype.resolve() -- see onEngine
+		// [REM] In CS5 and later, ~.MCS4 is set to false.
+		// => [ [x,y] ]
+		{
+			I = callee.µ['~'];
+			
+			// Substituted parent space, from this.pages[0].
+			// ---
+			switch( sbs=+destSpace )
+			{
+				case I.csIN: sbs=I.csPR; break;
+				case I.csPR: sbs=I.csPB; break;
+				default:;
+			}
+			
+			// Parse the location scheme.
+			// ---
+			xy = uv = ru = s = i = false;
+			while( 1 )
+			{
+				// Box spec :: <ANCHOR_PT> -- Implied: bVSB, csIN
+				// ---
+				if( !(location instanceof Array) ){ uv=location ; break; }
+				
+				// Box spec :: [ <ANCHOR_PT>, <BOX_LIMITS>, ?<SPACE> ]
+				// ---
+				t = +location[1];
+				if( t==I.bGEO || t==I.bVSB ){ uv=location[0]; s=+(location[2]||0); break; }
+				
+				// Space spec :: [x,y] -- Implied: pasteboard space
+				// ---
+				if( !(location[0] instanceof Array) ){ xy=location; s=I.csPB; break; }
+
+				// Space spec :: [ [x,y], <SPACE> ]
+				// ---
+				if( I.CHKS(t) ){ xy=location[0]; s=t; break; }
+				
+				// ---
+				// `location` is a ruler spec :: [ [rx,ry], [u,v]|Anchor, ?boxLim, ?space ]
+				// ---
+				
+				ru = location[0];
+				t = location[1];
+				if( (t instanceof Array) || I.AP2S.hasOwnProperty(+t) )
+				{
+					uv = t;
+					s = location[3]||0;
+				}
+				else
+				{
+					i = t||0;
+				}
+				break;
+			}
+
+			// Substituted reference space.
+			// ---
+			switch( s||(s=I.csIN) )
+			{
+				case I.csIN: s=I.csPR; break;
+				case I.csPR: s=I.csPB; break;
+				default:;
+			}
+			
+			// 1. SPACE LOCATION.
+			// ---
+			if( xy )
+			{
+				return this.pages[0].resolve( [xy,s] , sbs );
+			}
+			
+			// 2. BOX LOCATION.
+			// ---
+			if( !ru )
+			{
+				xy = this.parent.spreads[0].resolve(location,I.csIN)[0];
+				return this.pages[0].resolve( [xy,I.csPR] , sbs );
+			}
+			
+			// 3. RULER LOCATION.
+			// ---
+			rulerUnits = !!rulerUnits;
+			if( false !== i )
+			{
+				return this.pages[0].resolve( [ru,i] , sbs, rulerUnits);
+			}
+
+			// See algorithm 3.b in COMPATIBILITY PATCHES.
+			// ---
+			xy = this.parent.spreads[0].resolve( [uv,I.bVSB,s] , I.csIN )[0];
+			t = this.pages[0];
+			lt = t.resolve( I.apTL, I.csPR )[0];
+			rb = t.resolve( I.apBR, I.csPR )[0];
+			uv = [
+				(xy[0]-lt[0])/(rb[0]-lt[0]),
+				(xy[1]-lt[1])/(rb[1]-lt[1]),
+				];
+			return t.resolve( [ru,uv], sbs, rulerUnits );
+		},
+
+	})
+
+	//==========================================================================
+	// COORDINATE PROCESSOR
+	//==========================================================================
+
+	[PRIVATE]
+	
+	({
+		DEEP: function(/*fct*/f,/*pt[]..[]*/src,/*pt[]..[]&*/dst,  i)
+		//----------------------------------
+		// (Deep-Recursive-Point-Process.)
+		// `f` :: func(x,y,pt&)
+		// [REM] We may have src===dst.
+		// => undef
+		{
+			dst.length = (i = src.length);
+			if( 2==i && !(src[0] && (src[0] instanceof Array)) )
+			{
+				f.call(this,src[0],src[1],dst);
+				return;
+			}
+			while( i-- )
+			{
+				( dst[i] && dst[i] instanceof Array ) || (dst[i]=[]);
+				callee.call(this,f,src[i],dst[i])
+			}
+		},
+
+		CHKO: function(/*any*/obj)
+		//----------------------------------
+		// (Check-DOM-Object.)
+		// => 1 [OK] | 0 [KO]
+		{
+			return ('toSpecifier' in obj) && ('resolve' in obj) && (obj.isValid) ? 1 : 0;
+		},
+		
+		CHKS: function(/*any*/space)
+		//----------------------------------
+		// (Check-Space.)
+		// => +<CoordSpaceEnum> [OK] | 0 [KO]
+		{
+			if( 'string' == typeof space )
+			{
+				space = (space.toLowerCase().match(callee.RE)||'')[1];
+				return space ? this[callee.Q[space]] : 0;
+			}
+			space = +space;
+			return ( this.csIN==space || this.csPR==space || this.csPG==space
+				  || this.csSP==space || this.csPB==space ) ? space : 0;
+		}
+		.setup
+		({
+			RE:/(inner|parent|page|spread|board)/,
+			Q: { inner:'csIN', parent:'csPR', page:'csPG', spread:'csSP', board:'csPB' },
+		}),
+		
+		RESO: function(/*uint[2][3]&*/q,/*dom*/obj,/*{zero,right,bottom}*/locs,/*uint*/destSpace,/*'XY'|'UV'|'UV_C'|'IJ'|'RL'*/kind,  re,t,oo,k,x,i,cs,mx,xy,pg)
+		//----------------------------------
+		// (Resolver.) [CHG190721] Improved version intended to fix the bug w/ anchored objects (CS6-CC.)
+		// this :: ~
+		// => undef
+		{
+			// Quick routine for Spread/Page object, or Spread/Page child.
+			// ---
+			if( (re=callee.CTOR).test(obj.constructor.name) || ((t=obj.parent) && (re.test(t.constructor.name))) )
+			{
+				callee.RSLV(q[0], obj, locs.zero,   destSpace);
+				callee.RSLV(q[1], obj, locs.right,  destSpace);
+				callee.RSLV(q[2], obj, locs.bottom, destSpace);
+				return;
+			}
+			
+			// ---
+			// `obj` might be (or belong to) an anchored object,
+			// so we need an alternate resolver.
+			// ---
+			oo = callee.KEYS;
+			if( 'IJ' != kind )
+			{
+				oo.zero = oo.right = oo.bottom = kind;
+			}
+			else
+			{
+				for( k in oo )
+				{
+					if( !oo.hasOwnProperty(k) ) continue;
+					t = locs[k];
+
+					if( (!(t instanceof Array)) || callee.BLIM(t[1]) )
+					{
+						oo[k]='UV';
+						continue;
+					}
+
+					if( (!(t[0] instanceof Array)) || callee.SPAC(t[1]) )
+					{
+						oo[k]='XY';
+						continue;
+					}
+
+					oo[k] = 'RL';
+				}
+			}
+			
+			for( k in oo )
+			{
+				if( !oo.hasOwnProperty(k) ) continue;
+				t = locs[k];
+				i = 1*('right'==k) || 2*('bottom'==k);
+				
+				kind = oo[k];
+				
+				if( 'XY' == kind )
+				{
+					// t :: [x,y]  |  [ [x,y], SPACE ]
+					// ---
+
+					( t[0] instanceof Array )
+					? ( cs=t[1], xy=t[0] )
+					: ( cs=this.csPB, xy=t );
+
+					// Use changeCoordinates instead of resolve.
+					// ---
+					xy = obj.transformValuesOf(cs)[0].invertMatrix()            // CS-to-INNER
+					     .catenateMatrix(obj.transformValuesOf(destSpace)[0])   // INNER-to-DEST
+					     .changeCoordinates(xy);
+
+					q[i][0] = xy[0];
+					q[i][1] = xy[1];
+					continue;
+				}
+				
+				if( 0===kind.indexOf('UV') )
+				{
+					// t :: AP  |  [AP,BL(,SPACE]]  |  [[u,v],BL(,SPACE)]
+					
+					// The UV point can be properly resolved in INNER coords, then
+					// converted through the INNER-to-DEST matrix.
+					// ---
+					xy = obj.resolve( t, this.csIN)[0];
+					
+					destSpace != this.csIN
+					&& ( xy = obj.transformValuesOf(destSpace)[0].changeCoordinates(xy) );
+
+					q[i][0] = xy[0];
+					q[i][1] = xy[1];
+					continue;
+				}
+				
+				// Ruler coordinates.
+				// t :: [ [rx,ry], (PAGE_IDX|PAGE_LOC) ]
+				
+				if( 'parentPage' in obj && (pg=obj.parentPage) )
+				{
+					// Get the coords (from the Page object) in SPREAD space.
+					// ---
+					xy = pg.resolve( t, (cs=this.csSP), !!t.ru )[0];
+
+					destSpace != cs
+					&& (xy = obj.transformValuesOf(cs)[0].invertMatrix()        // SPREAD-to-INNER
+					     .catenateMatrix(obj.transformValuesOf(destSpace)[0])   // INNER-to-DEST
+					     .changeCoordinates(xy));
+
+					q[i][0] = xy[0];
+					q[i][1] = xy[1];
+				}
+				else
+				{
+					// Fallback.
+					// ---
+					callee.RSLV(q[i], obj, t,   destSpace);
+				}
+			}
+		}
+		.setup
+		({
+			KEYS: { zero:'', right:'', bottom:'' },
+			CTOR: /^Spread|MasterSpread|Page$/,
+
+			BLIM: function(/*any*/x,  q)
+			//----------------------------------
+			// Is-Box-Limits
+			// => true [OK]  |  falsy [KO]
+			{
+				return (x=+x) && (x==(q=callee.Q)[0] || x==q[1]);
+			}
+			.setup
+			({
+				Q: [ µ['~'].bGEO, µ['~'].bVSB ],
+			}),
+
+			SPAC: function(/*any*/x,  q,i,r)
+			//----------------------------------
+			// Is-Coord-Space
+			// => true [OK]  |  falsy [KO]
+			{
+				if( !(x=+x) ) return 0;
+				for( i=(q=callee.Q).length ; i-- && !(r=(x==q[i])) ; );
+				return r;
+			}
+			.setup
+			({
+				Q: [ µ['~'].csIN, µ['~'].csPR, µ['~'].csPG, µ['~'].csSP, µ['~'].csPB ],
+			}),
+
+			RSLV: function(/*pnt&*/xy,/*dom*/obj,/*location*/loc,/*space*/dst,  t)
+			//----------------------------------
+			// => xy&
+			{
+				t = obj.resolve(loc, dst, (loc instanceof Array) && !!loc.ru)[0];
+				return (xy[0]=t[0]), (xy[1] = t[1]), xy;
+			},
+		}),
+
+		INIT: function(/*0:from|1:into*/step,/*'XY'|'UV'|'UV_C'|'IJ'|'RL'*/kind,/*dom*/ref,/*str|uint|false*/space,/*bool|{zero,right,bottom}*/xtra,  locs,a,b)
+		//----------------------------------
+		// (Initializer.)
+		// [ADD190615] Added 'IJ' kind for custom `from` schemes.
+		// => undef [OK]  |  str [KO-ERR]
+		{
+			if( !this.CHKO(ref) )
+				return __("Invalid `ref` argument (%1). Should be a PageItem, Spread, or Page.",ref);
+
+			if( false !== space && !(space=this.CHKS(space)) )
+				return __("Invalid `space` argument (%1)",space);
+
+			// Register the FROM specifier.
+			// ---
+			step || (callee.SPEC=ref.toSpecifier());
+
+			locs = 'IJ'==kind ? xtra : callee[kind];
+			switch( kind )
+			{
+				case 'XY':
+					locs.zero[1] = locs.right[1] = locs.bottom[1] = space;
+					break;
+				case 'UV':
+				case 'UV_C':
+					locs.zero[1] = locs.right[1] = locs.bottom[1] = this[xtra?'bVSB':'bGEO'];
+					locs.zero[2] = locs.right[2] = locs.bottom[2] = space;
+					break;
+				case 'RL':
+					locs.zero.ru = locs.right.ru = locs.bottom.ru = !!xtra;
+					break;
+				default:
+					;
+			}
+
+			a = callee.FROM;
+			b = callee.INTO;
+			this.RESO(step?b:a, ref, locs, this.csPB, kind);
+			this.RMAP( this.CONV.MX, a[0],a[1],a[2], b[0],b[1],b[2] );
+		}
+		.setup
+		({
+			XY: {
+				zero:   [ [0,0], void 0 ],
+				right:  [ [1,0], void 0 ],
+				bottom: [ [0,1], void 0 ],
+				},
+			UV: {
+				zero:   [ µ['~'].apTL, void 0, void 0 ],
+				right:  [ µ['~'].apTR, void 0, void 0 ],
+				bottom: [ µ['~'].apBL, void 0, void 0 ],
+				},
+			// [ADD190427]
+			UV_C: {
+				zero:   [ µ['~'].apCC, void 0, void 0 ],
+				right:  [ µ['~'].apRC, void 0, void 0 ],
+				bottom: [ µ['~'].apBC, void 0, void 0 ],
+				},
+			RL: {
+				zero:   [ [0,0], µ['~'].apCC ],
+				right:  [ [1,0], µ['~'].apCC ],
+				bottom: [ [0,1], µ['~'].apCC ],
+				},
+			FROM: [ [0,0] , [1,0], [0,1] ],
+			INTO: [ [0,0] , [1,0], [0,1] ],
+			SPEC: 0,
+		}),
+
+		RMAP: function(/*num[6]&*/mx,/*pt*/o,/*pt*/i,/*pt*/j,/*pt*/O,/*pt*/I,/*pt*/J,  x,y,a,b,c,d,X,Y,A,B,C,D,t)
+		//----------------------------------
+		// (Re-Map.)
+		// => undef
+		{
+			// FROM-to-PB matrix.
+			// ---
+			x = o[0];   y = o[1];
+			a = i[0]-x;  b = i[1]-y;
+			c = j[0]-x;  d = j[1]-y;
+
+			// INTO-to-PB matrix.
+			// ---
+			X = O[0];   Y = O[1];
+			A = I[0]-X;  B = I[1]-Y;
+			C = J[0]-X;  D = J[1]-Y;
+
+			// Invert matrix --> PB-to-INTO.
+			// ---
+			t = A*D-B*C;
+			I = (C*Y-D*X)/t;
+			J = (B*X-A*Y)/t;
+			(O=A), (A=D/t), (D=O/t);
+			B = -B/t;
+			C = -C/t;
+
+			// Product --> FROM-to-INTO
+			// ---
+			mx[0] = a*A + b*C;
+			mx[1] = a*B + b*D;
+			mx[2] = c*A + d*C;
+			mx[3] = c*B + d*D;
+			// ---
+			mx[4] = x*A + y*C + I;
+			mx[5] = x*B + y*D + J;
+		},
+
+		CONV: function(/*num*/x,/*num*/y,/*pt&*/r,  k,mx)
+		//----------------------------------
+		// (Location-Converter.)
+		// [ADD190615] Supports the preScale feature.
+		// => [x,y]&
+		{
+			1 != (k=callee.KX) && (x*=k);  // [ADD190615]
+			1 != (k=callee.KY) && (y*=k);  // [ADD190615]
+
+			mx = callee.MX;
+			r[0] = mx[0]*x + mx[2]*y + mx[4];
+			r[1] = mx[1]*x + mx[3]*y + mx[5];
+			
+			return r;
+		}
+		.setup({
+			MX:   [ 1, 0, 0, 1, 0, 0 ],
+			KX:   1,
+			KY:   1,
+		}),
+
+	})
+
+	//==========================================================================
+	// API
+	//==========================================================================
+
+	[PUBLIC]
+	
+	({
+		onEngine: function onEngine_(  I,f)
+		//----------------------------------
+		{
+			I = callee.µ['~'];
+			
+			(f=I.MCS4) && (MasterSpread.prototype.resolve = f);
+		},
+
+		fromXY: function fromXY_D_s$CoordSpace$_$this$(/*PageItem|Image|Spread|Page*/ref,/*str|uint|CS=auto*/space,  s)
+		//----------------------------------
+		// Initialize the `convert` method so it takes as input arguments
+		// *coordinate space* coordinates, with respect to the `ref` object.
+		// ---
+		// space :: 'inner' | 'parent' | 'page' | 'spread' | 'board' | <CoordSpaceEnum>
+		// [REM] `page` coordinate space is only supported from InDesign CS6.
+		// => µ [OK]  |  ERROR [KO]
+		{
+			( s=callee.µ['~'].INIT(0, 'XY', ref, space||'inner') )
+			&& $.global[callee.µ.__root__].error(s,callee);
+			return callee.µ;
+		},
+
+		fromUV: function fromUV_D_s$CoordSpace$_b_$this$(/*PageItem|Image|Spread|Page*/ref,/*str|uint|CS=auto*/space,/*bool=0*/visibleBounds,/*bool=0*/centered,  s)
+		//----------------------------------
+		// Initialize the `convert` method so it takes as input arguments
+		// *bounding box* coordinates --[0,0]=top-left; [1,1]=bottom-right--
+		// the box being framed relative to `space` and w/ respect to `visibleBounds`.
+		// [ADD190427] If `centered` is truthy, use a variant of the (u,v) system where:
+		//   [0,0] refers to the center anchor,
+		//   [1,0] -> center-right  ; [-1,0] -> center-left
+		//   [0,1] -> center-bottom ; [0,-1] -> center-top
+		// ---
+		// space :: 'inner' | 'parent' | 'page' | 'spread' | 'board' | <CoordSpaceEnum>
+		// visibleBounds :: whether the bounding box relies on visible bounds rather
+		//                  than geometric path (default.)
+		// [REM] `page` coordinate space is only supported from InDesign CS6.
+		// => µ [OK]  |  ERROR [KO]
+		{
+			( s=callee.µ['~'].INIT(0, centered ? 'UV_C' : 'UV', ref, space||'inner', visibleBounds) )
+			&& $.global[callee.µ.__root__].error(s,callee);
+			return callee.µ;
+		},
+		
+		fromRL: function fromRL_D_b_$this$(/*PageItem|Image|Spread|Page*/ref,/*bool=0*/fromPoints,  s)
+		//----------------------------------
+		// Initialize the `convert` method so it takes as input arguments
+		// *rulers* coordinates attached to the `ref` object.
+		// ---
+		// `fromPoints` :: whether coordinates are to be considered in POINTS rather
+		//                 than current horizontal and vertical units (default.)
+		// [REM] Rulers coordinates depends on both `Document.zeroPoint`,
+		// `ViewPreference.rulerOrigin`, and `DocumentPreference.facingPages`.
+		// [REM] If `ref` is a Spread while rulerOrigin is page dependent, the
+		// considered page is the one that contains the spread center point.
+		// => µ [OK]  |  ERROR [KO]
+		{
+			( s=callee.µ['~'].INIT(0, 'RL', ref, false, !fromPoints) )
+			&& $.global[callee.µ.__root__].error(s,callee);
+			return callee.µ;
+		},
+
+		fromCustom: function fromCustom_D_$Locations$_$this$(/*PageItem|Image|Spread|Page*/ref,/*Location[3]*/locs,  s)
+		//----------------------------------
+		// [ADD190617] Initialize the `convert` method so it takes as input arguments three
+		// location specifiers (origin, unit-right, unit-bottom) relative to ref. The converter
+		// is then built so that input coordinates be interpreted in that system: [0,0] will match the
+		// origin, [1,0] will match the unit-right point and [0,1] will match the unit-bottom point.
+		// ---
+		// locs :: array of three <Location> items, each <Location> having one of the regular forms:
+		// (a) T-specifier: [x,y]  or  [[x,y],<COORD_SPACE>]
+		// (b) B-specifier: <ANCHOR_PT>  or  [<ANCHOR_PT>,<BOX_LIMITS>]  or  [<ANCHOR_PT>,<BOX_LIMITS>,<COORD_SPACE>]
+		//                               or  [[u,v],<BOX_LIMITS>]        or  [[u,v],<BOX_LIMITS>,<COORD_SPACE>]
+		// (c) R-specifier: [[rx,ry],<PAGE_INDEX>]  or  [[rx,ry],<Location>]
+		//     To get a R-specifier interpreted in ruler units, add the property `ru` to the array and set it to true.
+		// The syntax `ref.resolve(locs[i] , ...)` must be valid for 0<=i<=2.
+		// => µ [OK]  |  ERROR [KO]
+		{
+			( !locs || !(locs instanceof Array) || 3!=locs.length )
+			&& $.global[callee.µ.__root__].error("Invalid `locs` argument. Should be an array of three locations",callee);
+			
+			// [TODO] Advanced Location validator.
+			
+			( s=callee.µ['~'].INIT(0, 'IJ', ref, false, { zero:locs[0], right:locs[1], bottom:locs[2] }) )
+			&& $.global[callee.µ.__root__].error(s,callee);
+
+			return callee.µ;
+		},
+
+		intoXY: function intoXY_ds$CoordSpace$_s$CoordSpace$_$this$(/*PageItem|Image|Spread|Page*/ref,/*str|uint|CS=auto*/space,  I,s)
+		//----------------------------------
+		// Initialize the `convert` method so it outputs *coordinate space*
+		// coordinates. If `ref` is provided use it as space provider,
+		// otherwise use the latest object declared in the `from..` method.
+		// [REM] If `ref` is omitted the 1st arg is parsed as a `space` arg.
+		// ---
+		// space :: 'inner' | 'parent' | 'page' | 'spread' | 'board' | <CoordSpaceEnum>
+		// [REM] `page` coordinate space is only supported from InDesign CS6.
+		// => µ [OK]  |  ERROR [KO]
+		{
+			I = callee.µ['~'];
+			
+			// Parse arguments.
+			// ---
+			I.CHKS(ref) && (space=ref, ref=0);
+			ref || ( (s=I.INIT.SPEC) && (ref=resolve(s)) );
+
+			( s=I.INIT(1, 'XY', ref, space||'inner') )
+			&& $.global[callee.µ.__root__].error(s,callee);
+			return callee.µ;
+		},
+
+		intoUV: function intoUV_ds$CoordSpace$_s$CoordSpace$b_b_$this$(/*PageItem|Image|Spread|Page*/ref,/*str|uint|CS=auto*/space,/*bool=0*/visibleBounds,  I,s)
+		//----------------------------------
+		// Initialize the `convert` method so it outputs *bounding box*
+		// coordinates--[0,0]=top-left; [1,1]=bottom-right--
+		// If `ref` is provided use it as box reference, otherwise use the
+		// latest object declared in the `from..` method.
+		// [REM] If `ref` is omitted the 1st arg is parsed as a `space` arg.
+		// ---
+		// space :: 'inner' | 'parent' | 'page' | 'spread' | 'board' | <CoordSpaceEnum>
+		// visibleBounds :: whether the bounding box relies on visible bounds rather
+		//                  than geometric path (default.)
+		// [REM] `page` coordinate space is only supported from InDesign CS6.
+		// => µ [OK]  |  ERROR [KO]
+		{
+			I = callee.µ['~'];
+
+			// Parse arguments.
+			// ---
+			I.CHKS(ref) && (visibleBounds=space, space=ref, ref=0);
+			ref || ( (s=I.INIT.SPEC) && (ref=resolve(s)) );
+
+			( s=I.INIT(1,'UV', ref, space||'inner', visibleBounds) )
+			&& $.global[callee.µ.__root__].error(s,callee);
+			return callee.µ;
+		},
+		
+		intoRL: function intoRL_db_b_$this$(/*PageItem|Image|Spread|Page*/ref,/*bool=0*/intoPoints,  I,s)
+		//----------------------------------
+		// Initialize the `convert` method so it outputs *rulers*
+		// coordinates. If `ref` is provided use it as ruler reference,
+		// otherwise use the latest object declared in the `from..` method.
+		// [REM] If `ref` is omitted the 1st arg is parsed as `intoPoints` arg.
+		// `intoPoints` :: whether coordinates are to be outputed in POINTS rather
+		//                 than current horizontal and vertical units (default.)
+		// [REM] If `ref` is a Spread while rulerOrigin is page dependent, the
+		// considered page is the one that contains the spread center point.
+		// => µ [OK]  |  ERROR [KO]
+		{
+			I = callee.µ['~'];
+
+			// Parse arguments.
+			// ---
+			s = typeof ref;
+			('boolean' == s || 'number' == s) && (intoPoints=ref, ref=0);
+			ref || ( (s=I.INIT.SPEC) && (ref=resolve(s)) );
+
+			( s=callee.µ['~'].INIT(1, 'RL', ref, false, !intoPoints) )
+			&& $.global[callee.µ.__root__].error(s,callee);
+			return callee.µ;
+		},
+		
+		convert: function convert_pa_pa_pa$matrix$(/*?pnt|pnt[]&*/xyInput,/*?pnt|pnt[]&*/xyOutput,  I,r)
+		//----------------------------------
+		// Given a point, or an array of points, expressed in 'from' coordinates
+		// --as specified in `from..` methods--, convert each coordinate pair in
+		// 'into' coordinates--as specified in `into..` methods.
+		// `xyInput`  :: Point or array of points (input coordinates.) If no argument is
+		//               supplied, return the conversion matrix (array of 6 numbers.)
+		// `xyOutput` :: (opt.) If supplied, reference of the output array. If `xyOutput`
+		//               is missing, output coordinates will be loaded in `xyInput`.
+		// This function returns a reference to the resulting array (xyOutput or xyInput.)
+		// ---
+		// Examples:
+		// µ.fromUV(obj,'inner').intoRL().convert([ [.5,0],[1,.5],[.5,1],[0,.5] ])
+		// -> Return the UV losange points of the inner bounding box in rulers coords.
+		// µ.fromRL(obj).intoXY('spread').convert(obj.paths[0].entirePath)
+		// -> Return the pathpoints coordinates in spread coordinate space coords.
+		// ---
+		// => point& | point[]& | matrix (i.e new num[6]) [OK]  |  ERROR [KO]
+		{
+			I = callee.µ['~'];
+			
+			if( !xyInput ) return I.CONV.MX.concat(); // [FIX190612]
+			
+			(xyInput instanceof Array)
+			|| $.global[callee.µ.__root__].error(__("Invalid `xyInput` argument (%1). Should be an Array.", xyInput.__class__),callee);
+			
+			r = ( xyOutput && xyOutput instanceof Array ) ? xyOuput : xyInput;
+
+			if( xyInput[0] && (xyInput[0] instanceof Array) )
+			{
+				I.DEEP(I.CONV,xyInput,r);
+				return r;
+			}
+			
+			if( 2==xyInput.length && 'number' == typeof xyInput[0] )
+			{
+				return I.CONV(xyInput[0],xyInput[1],r);
+			}
+
+			$.global[callee.µ.__root__].error(__("Invalid `xyInput` argument. Should be either a point or an Array of points."),callee);
+		},
+		
+		matrixValues: function matrixValues_$matrix$()
+		//----------------------------------
+		// Return the attributes of the internal matrix (array of 6 numbers.)
+		// => new num[6]
+		{
+			return callee.µ['~'].CONV.MX.concat();
+		},
+		
+		preScale: function preScale_n_n_$this$(/*?num!=0*/kx,/*?num!=0*/ky,  F)
+		//----------------------------------
+		// [ADD190615] Preset custom `kx` and/or `ky` factors to be applied
+		// during `convert` to every incoming (x,y) coordinates. If `kx` (resp.
+		// `ky`) is zero or not a  number, the default factor (=1) is restored.
+		// This function is useful to premultiply coordinates in `fromUV` scheme.
+		{
+			F = callee.µ['~'].CONV;
+			F.KX = kx && 'number'==typeof kx ? kx : 1;
+			F.KY = ky && 'number'==typeof ky ? ky : 1;
+		},
+
+	})

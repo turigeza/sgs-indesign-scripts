@@ -1,0 +1,301 @@
+/*******************************************************************************
+
+		Name:           Web
+		Desc:           Basic HTTP/1.x client and other WWW features.
+		Path:           /etc/$$.Web.jsxlib
+		Require:        ---
+		Encoding:       ÛȚF8
+		Core:           NO
+		Kind:           Module.
+		API:            =get() parseURI() browse()
+		DOM-access:     YES (if https involved.)
+		Todo:           make `wantText` automatic if not supplied
+		Created:        170403 (YYMMDD)
+		Modified:       200228 (YYMMDD)
+
+*******************************************************************************/
+
+;$$.hasOwnProperty('Web') || eval(__(MODULE, $$, 'Web', 200228, 'get'))
+
+	//==========================================================================
+	// NOTICE
+	//==========================================================================
+
+	/*
+
+	This module offers HTTP and Web-related functionalities.
+	Use
+	- `$$.Web.parseURI(str)` to split an URI in its inner components ;
+	- `$$.Web.browse(validURI)` to open the navigator at this location ;
+	- `$$.Web.get(httpURI)` -- or simply `$$.Web(httpURI)` -- to download
+	   the target.
+
+	RELEASE NOTES
+	
+	[170609] 'https' supported on Win platforms.
+	[170611] 'https' partially supported on Mac platforms. If the server emits
+	         a 301 redirection to 'https', the function tries to get contents
+	         using the dedicated solution.
+	[190315] Important fix for Windows, `responseBody` now properly escaped
+	         in VBS and parsed in JS.
+	[190322] Full rewrite; splitted parts into snippets.
+	[200228] Fixed a typo in `HttpSocket` (was causing a not-a-function error.)
+	
+	*/
+
+	// Uri parsing -> public `parseURI()`method.
+	//---
+	#include 'Web/$$.UriParsing.jsxinc'
+
+	// Public `browse()` method.
+	//---
+	#include 'Web/$$.Browser.jsxinc'
+
+	// Socket-based HTTP 1.x process.
+	// -> ~.HGET()
+	// ---
+	#include 'Web/$$.HttpSocket.jsxinc'
+
+	// Specific HTTPS solution.
+	// -> ~.HSEC()
+	// ---
+	#include 'Web/$$.HttpSecure.jsxinc'
+
+
+	//==========================================================================
+	// API
+	//==========================================================================
+
+	[PUBLIC]
+	
+	({
+		
+		get : function get_S_b_y_b_y_Õ(/*str*/uri,/*0|1=0*/wantText,/*uint=120*/timeOut,/*0|1=0*/VOLATILE,/*uint=10*/R301,  µ,$$,tg,ret,hSec,code,errKind)
+		//----------------------------------
+		// Download a HTTP resource using a GET request and return the result
+		// in the form { status:str, statusCode:uint, headers:{}, data:str }.
+		// (See example below.)
+		// If something goes wrong (invalid URI, cannot connect to server,
+		// target unavailable, etc.), an `error` key is added to the result
+		// and describes the issue. An actual (fatal) error is thrown if you
+		// don't send `uri` as a string, or if https is invoked in modal state.
+		// ---
+		// `wantText` :: Whether the target is expected in text type.
+		// If VOLATILE is on, put the result in a temporary cache
+		// instead of creating a new object. (By default, VOLATILE=0.)
+		// ---
+		// `R301` :: Number of attempts in case of 301-redirection.
+		// The HTTP response status code 301 Moved Permanently is used for
+		// permanent URL redirection, meaning current links or records
+		// using the URL that the response is received for should be
+		// updated. The new URL should be provided in the `Location` field
+		// included with the response.
+		// ---
+		// Example :
+		// $$.Web('indiscripts.com/blog/public/IndiscriptsLogo.png')
+		// => {
+		//    status: "HTTP/1.0 200 OK",
+		//    statusCode : 200,
+		//    headers : {
+		//        "Cache-Control" : "public, max-age=604800",
+		//        "Expires" : "Wed, 12 Apr 2017 03:42:08 GMT",
+		//        "Last-Modified" : "Mon, 05 Jan 2015 05:22:39 GMT",
+		//        "Content-Type" : "image/png",
+		//        "Content-Length" : "53737",
+		//        "Date" : "Wed, 05 Apr 2017 03:42:08 GMT",
+		//        "Accept-Ranges" : "bytes",
+		//        "Server" : "LiteSpeed",
+		//        "Connection" : "Keep-Alive"
+		//        }
+		//    data : "\x89PNG\r\n\x1A\n\0\0\0\ (...) 0IEND\xAEB",
+		//    }
+		// ---
+		// => { status, statusCode, headers, data, ?error }
+		{
+			// Initialization.
+			// ---
+			$$ = $.global[(µ=callee.µ).__root__];
+			('undefined' == typeof R301) && (R301=10);
+			if( 'string' != typeof uri )
+			{
+				$$.error(__("Invalid URI type (%1). Should be a string.", typeof uri),callee);
+			}
+			ret = callee.RESP( VOLATILE ? (callee.Q||(callee.Q={})) : {} );
+			
+			while( 1 )
+			{
+				code = -4; // URI stage.
+
+				if( !(uri=uri.trim()).length )
+				{
+					ret.error = "Empty URI";
+					break;
+				}
+
+				// Need to prepend 'http:'?
+				// ---
+				if( !callee.HPFX.test(uri) )
+				{
+					$$.trace(__("%1 > Prepend 'http://' to the URI %2.",µ, uri.toSource()));
+					uri = 'http://' + uri;
+				}
+
+				// Parse the URI.
+				// ---
+				tg = µ.parseURI(uri,1);
+				if( !tg.protocol )
+				{
+					ret.error = __("Invalid URI: %1",uri.toSource());
+					break;
+				}
+				
+				// Host?
+				// ---
+				uri = tg.source;
+				if( !tg.host )
+				{
+					ret.error = __("No host provided in %1",uri.toSource());
+					break;
+				}
+
+				// Valid location?
+				// ---
+				tg.location || (tg.location='/');
+				if( '/' != tg.location.charAt(0) )
+				{
+					ret.error = __("Invalid location %1 in %2", tg.location.toSource(), uri.toSource());
+					break;
+				}
+
+				// https needed? allowed?
+				// ---
+				hSec = 'https'==tg.protocol;
+				if( hSec && app.modalState )
+				{
+					$$.error(__("Cannot access https target in app modal state."),callee);
+				}
+
+				// Add extra keys to the target.
+				// ---
+				tg.wantText = wantText ? 1 : 0;
+				tg.delay = timeOut = ('number' == typeof timeOut) ? Math.max(timeOut>>>0,1) : 120;
+
+				// Call the getter.
+				// ---
+				code = µ['~'][hSec?'HSEC':'HGET'](ret, tg, (+$$.trace)&&$$.Log.trace);
+				if( 1!==code ) break;
+
+				// Status?
+				// ---
+				if( !ret.status )
+				{
+					ret.error = "Missing status";
+					code = -3;
+					break;
+				}
+
+				// Redirection?
+				// ---
+				if( 0 <= ret.status.indexOf('301') )
+				{
+					$$.warn( __("%1 > HTTP 301 Redirection required.", µ, uri) );
+					
+					if( 0 >= R301 )
+					{
+						ret.error = "Too many redirections";
+						code = -3;
+						break;
+					}
+					
+					if( !(ret.headers||0).Location )
+					{
+						ret.error = "Missing location during redirection";
+						code = -3;
+						break;
+					}
+					
+					code = 301;
+					break;
+				}
+
+				if( !ret.data.length )
+				{
+					ret.error = "No data received";
+					code = -3;
+					break;
+				}
+				
+				break;
+			}
+
+			// Error exit.
+			// ---
+			if( 0 >= code )
+			{
+				// Just to be sure
+				// ---
+				ret.data = '';
+				
+				// Format and warn error.
+				// ---
+				errKind = callee.ERRK[-code]||'';
+				ret.error = ( errKind ? ('['+errKind+'] ') : '' ) + (ret.error || "Undetermined error");
+				$$.warn( __("%1 > %2",µ,ret.error) );
+			}
+
+			// Redirection.
+			// ---
+			if( 301==code )
+			{
+				uri = ret.headers.Location;
+				$$.warn( __("%1 > HTTP 301 Redirection to %2.",µ, uri) );
+				VOLATILE || $$.kill(ret);
+				ret = callee(uri,wantText,timeOut,VOLATILE,--R301);
+			}
+
+			return ret;
+		}
+		.setup
+		({
+			// http(s) prefix.
+			// ---
+			HPFX : RegExp('^https?://','i'),
+			
+			// Error kinds.
+			// ---
+			ERRK : Array
+			(
+				/*-0*/  'HTTP',
+				/*-1*/  'CNX',
+				/*-2*/  'HTTPS',
+				/*-3*/  'EXIT',
+				/*-4*/  'URI',
+			),
+
+			RESP : function(/*{ status,statusCode,headers,data,?error }&*/r,  o,k)
+			//----------------------------------
+			// (Reset-Response.) Initialize the set `r` and return it. If it
+			// contains old data, all keys are reset to their empty value.
+			// ---
+			// => r&
+			{
+				r.status = '';
+				r.statusCode = 0;
+				
+				if( (o=r.headers) && o===Object(o) )
+				{
+					for( k in o ) o.hasOwnProperty(k) && delete o[k];
+				}
+				else
+				{
+					r.headers = {};
+				}
+
+				r.data = '';
+				delete r.error;
+				
+				return r;
+			},
+		}),
+
+	})

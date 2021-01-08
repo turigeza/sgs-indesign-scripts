@@ -1,0 +1,1277 @@
+/*******************************************************************************
+
+		Name:           string
+		Desc:           Improves and extends String and String.prototype
+		Path:           /core/Ext/$$.string.jsxinc
+		Require:        __() ; /Ext/patterns
+		Encoding:       ÛȚF8
+		Core:           YES
+		Kind:           Part of /Ext
+		API:  static:   SourceEscapes fromCodePoint() fromUTF8() fromBase64()
+		                random() levenDist() levenFilter()
+		       proto:   codePointAt() toUTF8() toBase64() toSource()
+		                split() [CS4] lastIndexOf() [CS4] charAt()
+		                subReplace()
+		                asPath() toPath() relativePath()
+		                trim() ltrim() rtrim() rtrunc() ltrunc() trunc()
+		                rpad() lpad() stripSpaces() charSet()
+		DOM-access:     NO
+		Todo:           Perf tests ; string.lorem() ; warn if relativePath() fails
+		                May improve word boundary detection in trunc methods (?)
+		                String.prototype.replace (U+0000 compliant in CS4.)
+		Created:        150510 (YYMMDD)
+		Modified:       210104 (YYMMDD)
+
+*******************************************************************************/
+
+	//==========================================================================
+	// [Static] String.SourceEscapes entity.
+	//==========================================================================
+
+	String.SourceEscapes = (function(/*str[]&*/a,  i,n,k)
+	//----------------------------------
+	// Database entity used by toSource().
+	//    index   =>  <CHAR>      ( = String.<CHAR_KEY> )
+	//    <CHAR>  =>  <CHAR_KEY>
+	{
+		for(
+			n=a.length, i=-1 ;
+			++i < n ;
+			(k=a[i]),(a[a[i]=String[k]]=k)
+		);
+		return a;
+
+	})(['BK','CR','LF','DQ','SQ','TB','BS','VT','FF']);
+
+
+	//==========================================================================
+	// [180703] String.fromCodePoint()          -- cf ECMA-262, 9th Edition
+	// [180705] String.prototype.codePointAt()  -- ibid
+	//==========================================================================
+
+	String.fromCodePoint = function fromCodePoint(/*?(u24,u24...)|u24[]*/a,  i,f,t)
+	//----------------------------------
+	// Implements ECMAScript's `String.fromCodePoint` function. (Supports either a
+	// list of arguments--as in the spec--or a simple array of code points.)
+	// [REM] Code points must range in 0..0x10FFFF.
+	// ---
+	// [ECMA2018] 21.1.2.2 String.fromCodePoint( ...codePoints )
+	// The String.fromCodePoint function may be called with any number of arguments
+	// which form the rest parameter codePoints. The following steps are taken:
+	//   1. Let codePoints be a List containing the arguments passed to this function.
+	//   2. Let length be the number of elements in codePoints.
+	//   3. Let elements be a new empty List.
+	//   4. Let nextIndex be 0.
+	//   5. Repeat, while nextIndex < length
+	//      a. Let next be codePoints[nextIndex].
+	//      b. Let nextCP be ? ToNumber(next).
+	//      c. If SameValue(nextCP, ToInteger(nextCP)) is false, throw a RangeError exception.
+	//      d. If nextCP < 0 or nextCP > 0x10FFFF, throw a RangeError exception.
+	//      e. Append the elements of the UTF16Encoding of nextCP to the end of elements.
+	//      f. Let nextIndex be nextIndex + 1.
+	//   6. Return the String value whose elements are, in order, the elements in the
+	//      List elements. If length is 0, the empty string is returned.
+	// ---
+	// E.g  String.fromCodePoint(0x30,0x31,0x32)            =>  "012"
+	//      String.fromCodePoint(0x61,0x28FF0,0x62)         =>  "a\uD863\uDFF0b"  ; i.e "a𨿰b"
+	//      String.fromCodePoint()                          =>  ""
+	//      String.fromCodePoint(0xFFFFFFF)                 =>  [Out of range error.]
+	//      String.fromCodePoint([25,0,0x1F602]).toSource() => `"\x19\0\uD83D\uDE02"`
+	//      String.fromCodePoint('a')                       =>  [Bad argument error.]
+	// ---
+	// => str
+	{
+		// If 1st arg is already an Array, clone it  -> `a`.
+		// Otherwise, turn `arguments` into an Array -> `a`.
+		// ---
+		a = a instanceof Array ?
+			( 1==a.length ? [a[0]] : Array.apply(null,a) ) :
+			[].slice.call(arguments);
+
+		// Develop surrogate pairs.
+		// ---
+		//for( f=Math.floor, i=a.length ; i-- ; 0xFFFF >= t && a.splice(i,1,0xD800+f((t-0x10000)/0x400),0xDC00+((t-0x10000)%0x400)) )
+		for( f=Math.floor, i=a.length ; i-- ; 0xFFFF < t && (t-=0x10000, a.splice(i,1,0xD800+f(t/0x400),0xDC00+(t%0x400))) )
+		{
+			t = a[i];
+
+			// IsInteger?  [KO] -> "Bad argument ..."
+			// ---
+			t !== (0|t) && Error.runtimeError(19, (($.global['$$']||0).JSON||String)(t));
+
+			// IsCodePoint? [KO] -> "... is out of range"
+			// ---
+			( 0 > t || t > 0x10FFFF ) && Error.runtimeError(41,__("Code point [%1]",t)); // ... is out of range
+		}
+
+		// Result string (taking advantage of `fromCharCode` :-)
+		// ---
+		return String.fromCharCode.apply(null,a);
+	};
+
+	String.prototype.codePointAt = function codePointAt(/*uint*/pos,  z,x,y)
+	//----------------------------------
+	// Implements ECMAScript's `String.prototype.codePointAt` function.
+	// In addition, the function's SIZE property is set to the number
+	// of consumed code units (0:None ; 1:RegularCharCode ; 2:Surrogate.)
+	// ---
+	// E.g  "012".codePointAt(1)                            =>  0x31
+	//      "a\uD863\uDFF0b".codePointAt(1)                 =>  0x28FF0  ; `this` is "a𨿰b"
+	//      "a\uD863\uDFF0b".codePointAt(2)                 =>  0xDFF0   ; inside the surrogate pair
+	//      "".codePointAt(0)                               =>  undefined
+	// ---
+	// => u24 (<= 0x10FFFF)  ;  callee.SIZE :: 0|1|2
+	{
+		z = -1 + this.length;
+		if( 0 > (pos|=0) || z < pos ) return callee.SIZE=0, void 0;
+
+		x = this.charCodeAt(pos);
+		if( 0xD800 > x || x > 0xDBFF || z==pos ) return callee.SIZE=1, x;
+
+		y = this.charCodeAt(1+pos);
+		if( 0xDC00 > y || y > 0xDFFF ) return callee.SIZE=1, x;
+
+		// Surrogate pair.
+		// 0x400*(lead-0xD800)  +  (trail-0xDC00) + 0x10000
+		//                     ie  0x2400+trail
+		// ---
+		return callee.SIZE=2, (0x400*(x-0xD800) + 0x2400 + y);
+	};
+
+	//==========================================================================
+	// [181007] String.fromUTF8()
+	// [181007] String.prototype.toUTF8()
+	//==========================================================================
+
+	String.fromUTF8 = function fromUTF8(/*str|uint8[]*/x)
+	//----------------------------------
+	// Given a sequence of *valid* UTF8 codes (string or array),
+	// reconstruct and output the original UTF16 string.
+	// See `String.prototype.toUTF8` for more detail.
+	// ---
+	// E.g  String.fromUTF8("\xC3\x80\xC3\x89\xC3\x94")  => "ÀÉÔ"
+	//      String.fromUTF8([0xF0,0xA8,0xBF,0xB0])       => "\uD863\uDFF0"  ; i.e "𨿰"
+	// ---
+	// => str
+	{
+		'string' == typeof x || (x=String.fromCharCode.apply(0,x));
+		return decodeURIComponent(escape(x));
+	};
+
+	String.prototype.toUTF8 = function toUTF8()
+	//----------------------------------
+	// Convert this string (assumed in native UTF16) into UTF8. The result
+	// is then a string formed of characters whose codes are all <= 0xFF.
+	// ---
+	// [REM] Keep in mind that the output string is in a 'transport format'
+	// for encoding purpose; it shouldn't be displayed as such!
+	// [REF] Famous snippet from Johan Sundström at
+	// ecmanaut.blogspot.com/2006/07/encoding-decoding-utf8-in-javascript.html
+	// ---
+	// E.g  "ÀÉÔ".toUTF8()                        => "\xC3\x80\xC3\x89\xC3\x94"
+	//      "a\uD863\uDFF0b".toUTF8()             => "a\xF0\xA8\xBF\xB0b"  ; `this` is "a𨿰b"
+	// ---
+	// => str
+	{
+		return unescape(encodeURIComponent(this));
+	};
+
+	//==========================================================================
+	// [200117] String.B64, .fromBase64()
+	//          String.prototype.toBase64()
+	//==========================================================================
+
+	String.B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
+
+	String.fromBase64 = function fromBase64(/*str|uint8[]*/s,/*bool=0*/AS_BYTES,  CHR,B,n,r,i,x0,x1,x2,x3,x)
+	//----------------------------------
+	// Given a sequence of *valid* Base64 codes (string or array), reconstruct
+	// and output the original JS string. By default, the outcoming bytes are
+	// assumed UTF8 units and then *converted into UTF16*. If `AS_BYTES` is set
+	// the routine returns the bytes without processing UTF8-to-UTF16 conv.
+	// ---
+	// => str
+	{
+		CHR = String.fromCharCode;
+		'string' == typeof s || (s=CHR.apply(0,x));
+
+		for
+		(
+			B=String.B64, n=s.length, r='', i=0 ;
+			// ---
+			i < n ;
+			// ---
+			x0 = B.indexOf(s.charAt(i++)),
+			x1 = B.indexOf(s.charAt(i++)),
+			x2 = B.indexOf(s.charAt(i++)),
+			x3 = B.indexOf(s.charAt(i++)),
+			x = x0 << 18 | x1 << 12 | x2 << 6 | x3,
+			r += ( 64 == x2 ? CHR(255&(x>>16)) : ( 64 == x3 ? CHR(255&(x>>16), 255&(x>>8)) : CHR(255&(x>>16), 255&(x>>8), 255&x) ) )
+		);
+
+		return AS_BYTES ? r : String.fromUTF8(r);
+	};
+
+	String.prototype.toBase64 = function toBase64(/*bool=0*/AS_BYTES,  s,B,n,r,i,x)
+	//----------------------------------
+	// Convert this string into Base64. (The result is always a code string
+	// exclusively formed of B64 characters.)
+	// By default, `this` is regarded as a full UTF16 string, so it is
+	// *converted into UTF8 bytes* and then passed to the base64 converter.
+	// If AS_BYTES is set, the method bypasses UTF16-to-UTF8 conversion and
+	// treats each incoming character as a byte. (Thus, if the string contains
+	// units greater than 0xFF, only the 8 lowest bits are kept.)
+	// ---
+	// [REM] The condition `S == String.fromBase64(S.toBase64())` is satisfied
+	// for any JS string (UTF16), but is no longer guaranteed if AS_BYTES is true.
+	// Set the AS_BYTES flag if you know that the target string addresses 8-bit
+	// characters only (e.g, UTF8 units.)
+	// ---
+	// E.g  "ÀÉÔ".toBase64()               => "wMnU"
+	//      "小飼弾".toBase64()             => "5bCP6aO85by+"  ;  UTF16-to-UTF8 behind the scenes
+	//      "小飼弾".toBase64(true)         => "n/8+"          ;  Warning: high bits are lost!
+	// ---
+	// => str
+	{
+		s = AS_BYTES ? String(this) : this.toUTF8();
+
+		for
+		(
+			B=String.B64, n=s.length, r='', i=0 ;
+			// ---
+			i < n ;
+			// ---
+			x = s.charCodeAt(i++) << 16 | s.charCodeAt(i++) << 8 | s.charCodeAt(i++),
+			r += B.charAt(63&(x>>18))+B.charAt(63&(x>>12))+B.charAt(63&(x>>6))+B.charAt(63&x)
+		);
+
+		return ( n %= 3 ) ?
+			( 1 < n ? (r.slice( 0, -1 ) + '=') : (r.slice( 0, -2 ) + '==') ) :
+			r;
+	};
+
+	//==========================================================================
+	// [181106] String.random(length)
+	//==========================================================================
+
+	String.random = function random(/*uint=4*/len,  s)
+	//----------------------------------
+	// Return a random string of length `len` and matching the
+	// pattern /[a-z][0-9a-z]*/. Useful to generate random IDs.
+	// [CHG190312] No longer uses `Date` timestamp.
+	// ---
+	// Examples:
+	//     String.random()   =>  "i1x4"
+	//     String.random(8)  =>  "f34a10w9"
+	//     String.random(16) =>  "gj1duwcgsqk9t8fz"
+	// ---
+	// => str
+	{
+		(len>>>=0) || (len=4);
+		for
+		(
+			s = String.fromCharCode( 0x61 + Math.floor(26*Math.random()) );
+			s.length < len ;
+			s += Math.round(0xFFFF*Math.random()).toString(36)
+		);
+
+		return s.slice(0,len);
+	};
+
+	//==========================================================================
+	// [190312] String.levenDist(a,b) ; String.levenFilter(arr,str)
+	//==========================================================================
+
+	String.levenDist = function levenDist(/*str*/a,/*str*/b,  x,y,t,p,Q,i,j,c,r,q)
+	//----------------------------------
+	// Measure the difference between two strings `a` and `b`
+	// using the Levenshtein distance algorithm.
+	// [REF] en.wikipedia.org/wiki/Levenshtein_distance
+	// [171207] First version (not published.)
+	// [190312] Released.
+	// => uint
+	{
+		if( a === b ) return 0;
+		x = a.length||0;
+		y = b.length||0;
+		if( !(x&&y) ) return x||y;
+
+		while( a.charAt(--x)===b.charAt(--y) );                  // R-trim => (x,y)::maxIds
+		(t=x) <= y || (x=y,y=t, t=a,a=b,b=t);                    // Symm.  => x <= y
+		for( p=-1 ; ++p <= x && a.charAt(p)===b.charAt(p) ; );   // L-trim => p::startId
+		if( p >= x ) return 1+y-p;
+
+		// Loop.
+		// ---
+		for( Q=Array(1+x), j=p ; j <= y ; ++j )
+		for( c=b.charAt(j), r=1+(t=j-p), i=p ; i <= x ; t=q, Q[i++]=r )
+		{
+			c!==a.charAt(i) && ++t;
+			q = Q[i]||(Q[i]=1+i-p);
+			r = (q=Q[i]) > r
+				? ( t > r ? (1+r) : t)
+				: ( t > q ? (1+q) : t);
+		}
+		return r;
+	};
+
+	String.levenFilter = function levenFilter(/*str[]*/strings,/*str*/s,/*uint=auto*/maxDist,/*bool=0*/CASE_SENSITIVE,  n,TOS,D,C,r,i,z,d)
+	//----------------------------------
+	// [190313] Return the subset of `strings` that match the string `s` with respect to
+	// a maximum Levenshtein distance `maxDist`. The output is a new Array, where strings
+	// are sorted by decreasing similarity relative to `s`. If `maxDist` is not supplied,
+	// its default value is the half length of `s`. If no item satisfies `maxDist` condition,
+	// an empty array is returned.
+	// `CASE_SENSITIVE` :: Whether the algorithm is case sensitive. Default is 0, meaning
+	// that distances are computed disregarding upper/lower case letters.
+	// ---
+	// Example:
+	//    String.levenFilter( ["Sunday","Monday","Saturday"], "sondage", 3 )
+	//    => ["Monday", "Sunday"]
+	// ---
+	// => new str[]  [MAY BE EMPTY]
+	{
+		if( !(n=(strings||0).length) || !(strings instanceof Array) ) return [];
+
+		TOS = CASE_SENSITIVE ? 'toString' : 'toLowerCase';
+
+		s = String(s||'')[TOS]();
+		maxDist !== (maxDist>>>0) && (maxDist=s.length>>>1);
+
+		D = String.levenDist;
+		C = String.fromCharCode;
+		for
+		(
+			r=[], z=0, i=-1 ;
+			++i < n ;
+			maxDist >= (d=D(s,(t=strings[i])[TOS]())) && (r[z++]=C(1+d)+t)
+		);
+		r.sort();
+
+		while( z-- ) r[z]=r[z].slice(1);
+		return r;
+	};
+
+	//==========================================================================
+	// String.prototype.toSource()
+	//==========================================================================
+
+	// Backup of the native method => String.__toSource__
+	// ---
+	'function' == typeof String.__toSource__ || (String.__toSource__ = String.prototype.toSource);
+
+	String.prototype.toSource = function toSource(/*<DQ>|<SQ>|false=<DQ>*/quote,/*bool=0*/allowUTF16,  q,o,NOQ,altQuote,r,i,s,k)
+	//----------------------------------
+	// Return a quote-nested string so that eval(this.toSource())===this. This function
+	// overrides the original toSource method in order to get shorter outputs.
+	// ---
+	// [CHG171205] Added the option `quote===false`. In that case, inner quotes are not
+	// escaped (<SQ> remains <SQ>, <DQ> remains <DQ>) and the result is not nested in quotes.
+	// ---
+	// Examples:
+	//
+	//   INPUT STRING (JS)  |  OUTPUT CHARS (NATIVE METHOD)          |  OUTPUT CHARS (NEW VERSION)
+	//   -------------------------------------------------------------------------------------------
+	//   "abc"              |  (new String("abc"))                   |  "abc"
+	//   -------------------------------------------------------------------------------------------
+	//   "\\\r\n\t\v\f\0"   |  (new String("\\\r\n\t\x0B\f\x00"))    |  "\\\r\n\t\v\f\0"
+	//   -------------------------------------------------------------------------------------------
+	//   "àbçdé"            |  (new String("\u00E0b\u00E7d\u00E9"))  |  "\xE0b\xE7d\xE9"
+	//
+	// [REM] Tested on a jpeg file owning 23,052 bytes, the new method returns 60,433 characters
+	// while the native method outputs 89,653 characters. Result is 67% lighter.
+	//
+	// `quote`      : Either <DQ> (default), <SQ>, or false. Use myStr.toSource("'") to get single
+	//                quote nesting. Use false to prevent quote escapes and discard quote nesting.
+	// `allowUTF16` : Reserved. (For the time being, output is always a full ASCII string.)
+	{
+		// Aliases.
+		// ---
+		q = callee.Q;
+		o = String.SourceEscapes;
+
+		// Defaut quote is <DQ>, unless <SQ> is supplied.
+		// altQuote :: quote==<DQ> ? <SQ> : <DQ>
+		// [ADD171205] Supports `quote===false` -> NOQ.
+		// ---
+		if( NOQ=+(false===quote) )
+		{
+			quote = String.DQ;
+			altQuote = String.SQ;
+		}
+		else
+		{
+			(String.SQ==quote) || (quote=String.DQ);
+			altQuote = String[ String.SQ==quote ? 'DQ' : 'SQ' ];
+		}
+
+		// Take advantage of native toSource() performance.
+		// ---
+		i = (r=String.__toSource__.call(this)).length;
+
+		// ---
+		// [REM] `r` cannot contain non-ASCII char at this stage
+		// so we can temporarily replace any escaped <BK> by <X1>,
+		// then safely work on instances of other escaped chars.
+		// ---
+
+		r = r.substring(q.start, i+q.end).replace(RegExp._BK, String.X1);
+
+		// `\u00` => `\x`
+		// ---
+		q.longUni && (r=r.replace(RegExp.BKuZ, String.BK+'x'));
+
+		// Improve native escapes according to improveEsc.
+		// E.g. `\x0B` => `\v`
+		// ---
+		for(
+			s=q.improvable, i=s.length ;
+			i-- ;
+			(k='_'+o[s.charAt(i)]), (r=r.replace(RegExp[k], String[k]))
+		);
+
+		// Manage alternate quote character. (Normal case is unsafeQuote==<SQ>.)
+		// If( quote != unsafe ), nothing to do (quote is already escaped and unsafe is OK here.)
+		// If( quote == unsafe ), unsafe => \unsafe ;  \altQuote => altQuote
+		// If unsafe is empty (unusual!) all quotes are escaped, therefore
+		// we need to remove escape seq for non-quote: \altQuote => altQuote
+		// ---
+		if( quote == q.unsafeQuote )
+		{
+			k = o[quote];
+			r = r.replace(RegExp[k], String['_'+k]);    // Repl. quote by its regular escape form
+			k = o[altQuote];
+			r = r.replace(RegExp['_'+k], altQuote);     // Repl. any \altQuote by altQuote
+		}
+		else
+		{
+			q.unsafeQuote || ( r=r.replace(RegExp['_'+o[altQuote]], altQuote) );
+		}
+
+		// [ADD171205] If NOQ, unescape <BK><DQ>.
+		// ---
+		NOQ && ( r=r.replace(RegExp['_'+o[quote]], quote) );
+
+		// Special treatment for escaped NUL char. (Tricky!)
+		// `\x00` --> `\0`  (lookahead != decimalDigit)
+		// ---
+		for(
+			i=-2 ;
+			-1 != (i=r.indexOf('\\x00',i+=2)) ;
+			isNaN( +( '-' + r.charAt(4+i) ) ) && ( r = r.substr(0,1+i) + '0' + r.substr(4+i) )
+		);
+
+		// Final result.
+		// ---
+		return (NOQ&&(quote='')), quote + r.replace(RegExp.X1, String._BK) + quote;
+	};
+
+	String.prototype.toSource.Q = (function(/*obj&*/R,  err,o,t,s,i,n,a)
+	//----------------------------------
+	// Cached structure (-> toSource.)
+	// => { start: int>0, end: int<0, longUni: 0|1, unsafeQuote: <DQ>|<SQ>|'', improvable: char* }
+	// [REM] The once-call function parses ExtendScript's native toSource behavior.
+	{
+		err = '';
+		o = String.SourceEscapes;
+
+		// Create a test string for analyzing the original toSource().
+		// ExtendScript produces verbose results looking like
+		// s :: `(new String("ZZ\\ZZ\rZZ\nZZ\"...\x0BZZ\fZZ\u00C0ZZ"))`
+		// ---
+		t = 'ZZ';
+		s = t + (o.join('')+'\xC0').split('').join(t) + t;
+		s = String.__toSource__.call(s);
+
+		// Compute magic offsets (start,end) so that string inside quotes
+		// *always* matches src.substring(start, end+src.length).
+		// ---
+		R.start = s.indexOf(t);
+		R.end   = (i=t.length) + s.lastIndexOf(t) - (n=s.length);
+
+		// Store escapes in array. Desired result is
+		// a :: [<_BK>,<_CR>,<_LF>,<_DQ>,<SQ>,<_TB>,<_BS>,<_VT>,<_FF>,`\u00C0`]
+		// ---
+		a = s.substring(i+R.start,-i+n+R.end).split(t);
+
+		// ---
+		// Almost every character is reduced to its shortest escape sequence.
+		// However, `\u00HH` can be shortened `\xHH` and `\x0B` is in fact `\v`.
+		// Also, <DQ> is usually escaped while <SQ> is not. We now have enough
+		// information to create a better toSource converter.
+		// [REM] We assume ExtendScript *may change* the native method,
+		// so we have to keep the algorithm fully agnostic.
+		// ---
+
+		// Whether we have to reduce `\u00HH`.
+		// ---
+		R.longUni = +(0 <= a.pop().indexOf('u00'));
+
+		// Check that String.SourceEscapes and `a` have now the same length.
+		// ---
+		if( a.length != o.length )
+		{
+			err = "A fatal error occured while analyzing String.prototype.toSource.";
+		}
+
+		// Check whether each escapable character is reduced as desired,
+		// that is, a[i] == String['_'+o[o[i]]].
+		// OK => Change a[i] into ''   (nothing to do, skip.)
+		// KO => Change a[i] into o[i] (character whose esc must be improved.)
+		// ---
+		// [REM] For the sake of abstraction we allow unsafeQuote=='', which would
+		// reflect native toSource() method to escape all quotation marks.
+		// Such case wouldn't lead to errors in the present implementation :-)
+
+		for( R.unsafeQuote='', i=a.length ; (!err) && i-- ; )
+		{
+			t = a[i];     // Native escape sequence, e.g `\r`
+			s = o[o[i]];  // Key, e.g 'CR'.
+
+			// Match case :-)
+			// ---
+			if( t == String['_'+s] ){ a[i]=''; continue; }
+
+			// Case where ExtendScript doesn't escape a quote,
+			// usually t==<SQ>. That's OK anyway.
+			// ---
+			if( t == String.SQ || t == String.DQ ){ R.unsafeQuote=t; a[i]=''; continue; }
+
+			// ExtendScript does not escape <BK> the right way :-(
+			// ---
+			if( 'BK' == s )
+			{
+				err = __("Unexpected escape sequence %1 for the backslash.", String.__toSource__call(t));
+				break;
+			}
+
+			// ExtendScript does not output a capturable escape sequence :-(
+			// ---
+			if( ! RegExp['_'+s].test(t) )
+			{
+				err = __("Cannot capture the escape sequence %1 for the character <%2>.", String.__toSource__call(t), s);
+				break;
+			}
+
+			// Finally, we provide a better escape sequence. Typical case is <VT>
+			// treated `\x0B` while it could be shortened `\v`. (We set a[i] to
+			// o[i] only if our own esc is shorter.)
+			// ---
+			a[i] = 2 < t.length ? o[i] : '';
+		}
+
+		if( err )
+		{
+			throw Error(__("%1 > %2", 'Ext/string', err));
+		}
+
+		R.improvable = [a.join(''),a.length=0][0];
+		return R;
+
+	})({});
+
+
+	//==========================================================================
+	// String.prototype.split [CS4 patch.]
+	//==========================================================================
+
+	/*
+
+	The below block is executed only if the split method is broken. It overrides
+	`String.prototype.split()` in order to restore the desired behavior. In
+	principle this patch only affects CS4, since `split` has been fixed in higher
+	versions of ExtendScript. Anyway we use a typical test to load it agnostically.
+
+	*/
+
+	if( "abc" != "a\0b\0c".split(/\u0000/).join('') )
+	{
+		// Backup of the native method => String.__split__
+		// ---
+		String.__split__ = String.prototype.split;
+
+		String.prototype.split = function split(/*str|RegExp*/separator,/*?uint32*/limit,  IS_REGEX,t)
+		//----------------------------------
+		// [180709] Allows to split a string even if it contains
+		// occurrences of U+0000, in ExtendScript CS4
+		// `separator` ::  String or RegExp
+		// `limit`     ::  Max. number of results [opt.]
+		// ---
+		// Examples:
+		// "aei\0abc\0\0xyz\0".split('\0')      => ["aei", "abc", "", "xyz", ""]
+		// "aei\0abc\0\0xyz".split(/[ab\x00]+/) => ["", "ei", "c", "xyz"]
+		// ---
+		// Return the resulting Array of substrings.
+		// => str[]
+		{
+			// Default limit is 2^32-1 (cf. ECMA-262)
+			// ---
+			'undefined'== typeof limit && (limit=0xFFFFFFFF);
+
+			// Limit===0 --> ret. empty array
+			// ---
+			if( 0 >= limit ){ return []; }
+
+			// IS_REGEX flag, or coerce `separator` into String.
+			// ---
+			(IS_REGEX = +(separator instanceof RegExp)) || (separator=String(separator));
+
+			// If:   (a) separator is undefined/empty
+			//    OR (b) `this` does not contain U+0000
+			//    OR (c) separator is a regexp that matches ''
+			// then the regular split() method is called.
+			// ---
+			if( (!separator) || -1 == this.indexOf('\0') || (IS_REGEX && separator.test('')) )
+			{
+				return String.__split__.call(this,separator,limit);
+			}
+
+			// If separator is equivalent to U+0000, reduce it.
+			// ---
+			IS_REGEX
+			&& ('\\u0000'===(t=separator.source) || '\\x00'===t || '\0'===t)
+			&& (IS_REGEX=0, separator='\0');
+
+			return callee[IS_REGEX ? 'SPLIT_BY_REG' : 'SPLIT_BY_STR'](this.valueOf(),separator,0,limit);
+		}
+
+		String.prototype.split.SPLIT_BY_STR = function(/*str*/s,/*str*/strSep,/*bool=0*/VOLATILE,/*uint=UINTMAX*/limit,  q,z,i,p)
+		//----------------------------------
+		// Split a string by strSep.
+		// [REM] We use the fact that `myString.indexOf(strSep)` works fine,
+		// while `myString.split(strSep)` is unsafe. Splits are built one-by-one.
+		// ---
+		// => new str[] (unless VOLATILE==1)
+		{
+			( q = VOLATILE ? (callee.Q||(callee.Q=[])) : [] ).length = 0;
+
+			if( !s ) return q;
+
+			// Default limit is 2^32-1 (cf. ECMA-262)
+			// ---
+			'undefined'== typeof limit && (limit=0xFFFFFFFF);
+
+			for( z=strSep.length, i=-1 ; (limit > ++i) && 0 <= (p=s.indexOf(strSep)) ; (q[i]=s.substr(0,p)),(s=s.substr(z+p)) );
+			(limit > i) && (q[i] = s);
+
+			return q;
+		};
+
+		String.prototype.split.SPLIT_BY_REG = function(/*str*/s,/*RegExp*/regSep,/*bool=0*/VOLATILE,/*uint=UINTMAX*/limit,  q,t,i)
+		//----------------------------------
+		// Split a string by regSep.
+		// [REM] Assumed that myString.match(RegExp) properly works, in
+		// particular that the statics `leftContext` and `rightContext`
+		// are updated accordingly--which seems to be the case in CS4.
+		// ---
+		// => new str[] (unless VOLATILE==1)
+		{
+			( q = VOLATILE ? (callee.Q||(callee.Q=[])) : [] ).length = 0;
+
+			if( !s ) return q;
+
+			// Default limit is 2^32-1 (cf. ECMA-262)
+			// ---
+			'undefined'== typeof limit && (limit=0xFFFFFFFF);
+
+			// Clone regSep, making sure it has no 'g' flag.
+			// ---
+			(t=regSep.flags()) && 'g'==t.charAt(0) && (t=t.substr(1));
+			regSep = RegExp(regSep.source,t);
+
+			for( i=-1 ; (limit > ++i) && s.match(regSep) ; (q[i]=RegExp.leftContext), (s=RegExp.rightContext) );
+			(limit > i) && (q[i] = s);
+
+			return q;
+		};
+
+	}
+
+	//==========================================================================
+	// [ADD200526] String.prototype.lastIndexOf [CS4 patch.]
+	//==========================================================================
+
+	/*
+
+	The below block is executed only if the lastIndexOf method is broken with
+	respect to the U+0000 character. Indeed `myStr.lastIndexOf('\0')` wrongly
+	returns `myStr.length` in CS4
+
+	*/
+
+	if( 0 !== "\0".lastIndexOf("\0") )
+	{
+		// Backup of the native method => String.__lastIndexOf__
+		// ---
+		String.__lastIndexOf__ = String.prototype.lastIndexOf;
+		
+		String.prototype.lastIndexOf = function lastIndexOf(/*str*/sub,/*?int*/pos,  n)
+		//----------------------------------
+		{
+			(n=this.length) && '\0'===sub
+			&& ( 'undefined'==typeof pos || n <= (pos|=0) || 0 > pos )
+			&& (pos=n-1);
+			return  n ? String.__lastIndexOf__.call(this,sub,pos) : -1;
+		};
+	}
+
+	//==========================================================================
+	// [ADD210104] String.prototype.charAt [patch]
+	//==========================================================================
+
+	/*
+
+	In JS the `charAt` method can pick a U+0000 character, e.g "x\0y".charAt(1)
+	returns "\0". But in ExtendScript an empty string is returned whenever
+	`charAt` should output "\0". The below code fixes that.
+
+	*/
+
+	if( "\0" !== "x\0y".charAt(1) )
+	{
+		// Backup of the native method => String.__charAt__
+		// ---
+		String.__charAt__ = String.prototype.charAt;
+		
+		String.prototype.charAt = function charAt(/*?uint*/pos,  r)
+		//----------------------------------
+		{
+			r = String.__charAt__.call(this,pos);
+			return ( r.length || (!this.length) || 0!==this.charCodeAt(pos) ) ? r : '\0';
+		};
+	}
+
+	//==========================================================================
+	// [ADD201025] String.prototype.subReplace()
+	//==========================================================================
+
+	String.prototype.subReplace = function subReplace(/*RegExp|str*/what,/*str|fct*/rpl,/*?RegExp*/where,/*bool=0*/OUTSIDE,  M,B,S,n,p,i,t,z,q)
+	//----------------------------------
+	// Replace `what` by `rpl` inside (or outside) the matches of `where`. This
+	// method performs replacements only in specific substrings determined by a
+	// regular expression:
+	// - if OUTSIDE is false (or missing,) the replacement is processed in
+	//   every substring captured by `where` (the outside is preserved.)
+	// - if OUTSIDE is true, the replacement is processed out of the
+	//   substrings captured by `where` (the inside is preserved.)
+	// The 1st and 2nd parameters are defined as in `String.prototype.replace()`
+	// and have the same meaning/behavior. The regular expression `where` only
+	// delineates the scope of replacement--as specified above. It may involve
+	// multiple substrings provided it has the global flag (as in /.../g);
+	// otherwise it will capture at most one matching substring.
+	// ---
+	// E.g    "abc<def><ghi>no<uv>".subReplace(/[aeiou]/gi, '#', /<[^>]+>/g, 0)
+	//     -> "abc<d#f><gh#>no<#v>"   // replacements processed inside <...>
+	//
+	//        "abc<def><ghi>no<uv>".subReplace(/[aeiou]/gi, '#', /<[^>]+>/g, 1)
+	//     -> "#bc<def><ghi>n#<uv>"   // replacements processed outside <...>
+	// ---
+	// => str
+	{
+		n = where && ((M=this.match(where))||0).length;
+		if( !n ) return this.replace(what,rpl);
+
+		// Deal with non-global regex (=single match.)
+		// ---
+		( 'RegExp'==where.__class__ && 'g'==where.toString().slice(-1) )
+		|| (M.length=n=1);
+
+		B = OUTSIDE ? 0 : 1;
+		S = ['',''];
+		for( p=0, i=-1 ; ++i < n ; )
+		{
+			t = S[1] = M[i];
+			if( !(z=t.length) ) continue;
+
+			q = this.indexOf(t,p);
+			S[0] = p < q ? this.slice(p,q) : (q=p, '');
+			
+			(t=S[B]).length && (S[B]=t.replace(what,rpl));
+			M[i] = S.join('');
+			p = q + z;
+		}
+
+		(t = p < this.length ? this.slice(p) : '').length
+		&& ( B || (t=t.replace(what,rpl)) );
+
+		return M.join('') + t;
+	};
+
+	//==========================================================================
+	// String.prototype.asPath() ; ...toPath(str) ; ...relativePath(str)
+	//==========================================================================
+	// IMPLEMENTATION NOTES
+	//==========================================================================
+
+	/*
+
+	The methods `asPath`, `toPath`, and `relativePath`, allow to manipulate POSIX
+	paths based on the slash separator '/' and the usual shortcuts '..' and '.'
+
+	Syntax of a POSIX path
+	-----------------------------------------------------
+	<POSIX_PATH>   ::=   <SEP>? <RELAT_PATH>?
+	<RELAT_PATH>   ::=   <PATH_ELEM> ( <SEP> <PATH_ELEM> )* <SEP>?
+	<PATH_ELEM>    ::=   <NAME> | <PARENT> | <HERE>
+	<NAME>         ::=   <CHAR>+
+	<SEP>          ::=   <SLASH>+
+	<SLASH>        ::=   '/'
+	<PARENT>       ::=   '..'
+	<HERE>         ::=   '.'
+	<CHAR>         ::=   { any character except '\' and '\0' }
+
+	[REM] In POSIX the optional trailing <SEP> in a <RELAT_PATH> is
+	allowed as a convenience, but it has no meaning and is ignored.
+
+
+	ABSOLUTE PATH. - An Absolute Path (AP) is a string in the form:
+
+	(1)    AP  ::    <SP> ( <XX> <SP>? )*
+
+	OK examples:    '/' ; '/aaa' ; '/a/' ; '/a/b/c' ; '/aaa/bb/'
+	KO examples:    ''  ; '//' ; '/../a' ; '/a/./b' ; '/a/b/c//'
+	An AP is never empty, it always starts with a <SP>.
+
+	RELATIVE PATH. - A Relative Path (RP) is a string in the form:
+
+	(2)    RP  ::    ( <DD> <SP> )* ( <XX> <SP>? )*
+
+	OK examples:    '' ; '../' ; '../../' ; 'aaa' ; 'a/b/' ; '../a/b'
+	KO examples:    '/' ; '..' ; '.' ; './' ; 'a/..' ; '../a/b.'
+	A RP might be empty. If not, it starts with either a <DD> or a <XX>.
+
+	NORMALIZED PATH. - A Normalized Path (NP) is either a AP or a RP.
+
+	(3a)   NP  ::    AP | RP
+
+	that is,
+
+	(3b)   NP  ::    ( <SP> | ( <DD> <SP> )* ) ( <XX> <SP>? )*
+
+	If a string S is known to be normalized, it's easy to decide
+	whether it is a AP or a RP, since (S[0]==<SP>)->(S is an AP.)
+	Note also that no NP can contain a dot (`.`) alone.
+
+	CONTAINER VS ELEMENT. - An AP may refer to either a Container,
+	or an Element, depending on the last character of the string.
+	If AP.lastChar == <SP>, then the path refers to a Container.
+	Otherwise, it refers to an Element. For example, '/a/b/' is an
+	AP-to-Container (APC) while '/a/b' is an AP-to-Element (APE.)
+	The same definition can be used for RPs, except for the empty
+	string (which is a valid RP.) If RP.lastChar == <SP>, then the
+	path refers to a Container (RPC.) If RP.lastChar != <SP> and
+	is not empty, then it refers to an Element (RPE.) Finally, if
+	RP is empty, its reference is undefined. For example, '../'
+	or 'a/b/' are RPC, while '../a' or 'a/b/c' are RPE.
+
+	The purpose of asPath() is to convert *any* string into a NP.
+	This is done by applying rules exposed in the implementation
+	of String.prototype.asPath below.
+
+	*/
+
+	String.prototype.asPath = function asPath(  a,ups,fd,q,i,s)
+	//----------------------------------
+	// Convert this into a normalized path, that is
+	//    ( <SP> | ( <DD> <SP> )* ) ( <XX> <SP>? )*
+	// where:
+	//    <SP> ::= '/'  ;  <DD> ::= '..'
+	//    <XX> ::= [neither-<SP>-nor-<DD>]+
+	// [REM] Use this routine to build a clean path from any
+	// string that results from complex concatenations. Note
+	// that the ending '/' is preserved if originally present.
+	// [REM] This function preserves the path kind (REL vs. ABS)
+	// ---
+	// Examples:
+	//        "".asPath() => ""      ;     "xyz".asPath() => "xyz"
+	//    "/xyz".asPath() => "/xyz"  ;    "xyz/".asPath() => "xyz/"
+	//    "/x/y".asPath() => "/x/y"  ;    "x/y/".asPath() => "x/y/"
+	//   "/x/..".asPath() => "/"     ;   "x/../".asPath() => "/"
+	//   "/../x".asPath() => "/x"    ;   "../x/".asPath() => "../x/"
+	// "/x/../y".asPath() => "/y"    ; "x/../y/".asPath() => "y/"
+	// "/x/./y/".asPath() => "/x/y/" ;   "x/./y".asPath() => "x/y"
+	// "x//y/./z/..//../a/./b/..//c/./d/".asPath() => "x/a/c/d/"
+	// ---
+	// => str
+	{
+		// Shortcut. (The empty string is a valid RP.)
+		// [FIX180517] `this.length` needed!
+		// ---
+		if( !this.length ) return '';
+
+		// Replace triple dots (or more) by double dots,
+		// then split the string along /+ into a.
+		// ---
+		a = this.replace(RegExp.DT3, '..').split(RegExp.SLs);
+
+		// If a[0] is NON-EMPTY, the path wants to be RELATIVE
+		//    and we need to keep track of UP jumps => ups = []
+		// If a[0] is EMPTY, the path wants to be ABSOLUTE
+		//    so no UP jump can be prepended => ups = '', a.shift()
+		//    (the empty item is simultaneously removed.)
+		// ---
+		// The queue array (q) is used during the loop in a
+		// push-pop fashion to navigate within the path.
+		// ---
+		for(
+			ups = a[0] ? [] : a.shift(), q=[], i=-1 ;
+			++i < a.length ;
+			'.'==(s=a[i]) ||
+			( '..'!=s ? q.push(s) : (q.length ? q.pop() : (ups && ups.push('../'))) )
+		);
+
+		// Format the result.
+		// ---
+		s = ( ups ? ups.join('') : '/' ) + q.join('/').replace(RegExp.DTs, '');
+
+		'/' != this.substr(-1) || '/' == s.substr(-1) || (s+='/');
+		return s;
+	};
+
+	String.prototype.toPath = function toPath(/*str*/dest)
+	//----------------------------------
+	// If dest[0]==<SP>,  return dest.asPath().
+	// If !dest || !this.length, return (dest||this).asPath().
+	// Otherwise, return (this+<SP>+dest).asPath().
+	// - If `dest` is ABSOLUTE, `this` is ignored and
+	//   `toPath(dest)` always results in `dest.asPath()`
+	// - If `dest` is RELATIVE, it is assumed relative to
+	//   `this` and the result is either relative or absolute
+	//   depending on `this` path kind. In particular, if
+	//   `this` is relative (to some implicit location,)
+	//   the result is relative to that same location.
+	//      this    dest    result
+	//    --------------------------------------------
+	//      any     ABS      ABS   ; result==<dest>
+	//      REL     REL      REL
+	//      ABS     REL      ABS
+	// ---
+	// [REM] Ending '/' is preserved if present at the end
+	// of the result.
+	// ---
+	// Examples:
+	//          "".toPath()              => ""
+	//       "xyz".toPath()              => "xyz"
+	//      "/xyz".toPath("abc")         => "/xyz/abc"
+	//      "xyz/".toPath("abc")         => "xyz/abc"
+	//      "/x/y".toPath("a/b/c")       => "/x/y/a/b/c"
+	//     "/x/y/".toPath("a/b/c/")      => "/x/y/a/b/c/"
+	//      "x/y/".toPath("/a/b/")       => "/a/b/"
+	//     "/x/..".toPath("a/../b/c")    => "/b/c"
+	//     "x/../".toPath("a/../b/c")    => "b/c"
+	//   "x/../..".toPath("a/b/c")       => "../a/b/c"
+	//  "../../x/".toPath("a/b/../../c") => "../../x/c"
+	//      "/x/y".toPath("../../../a")  => "/a"
+	// ---
+	// => str
+	{
+		// [FIX180517] `this.length` needed!
+		// ---
+		return (
+			dest ?
+			( (!this.length) || '/'==dest.charAt(0) ? dest : (this+'/'+dest) ) :
+			this
+			).asPath();
+	};
+
+	String.prototype.relativePath = function relativePath(/*str*/dest,  from,fAB,dAB,b,s0,s1,eq,p)
+	//----------------------------------
+	// [ADD180517] Convert `this` into a normalized path p0,
+	// convert `dest` into a normalized path p1, then return
+	// the p0-to-p1 path *if resolvable*.
+	// ---
+	// 1 Usually the client provides ABSOLUTE inputs and the
+	//   result is a relative path based on the location
+	//   which `this` points out to, e.g
+	//   a) "/a/b/c/d".relativePath("/a/b/x/y") => "../../x/y"
+	//      The output may still be absolute (`dest` as is)
+	//      if `this` and `dest` do not share any node:
+	//      "/u/a/b/c".relativePath("/v/x/y/z") => "/v/x/y/z"
+	//   b) Also, if `this` is RELATIVE while `dest` is ABSOLUTE,
+	//      no assumption is made on the actual location which
+	//      `this` is based on, and `dest` is returned as is:
+	//        e.g  "a/b/c".relativePath("/a/x")   => "/a/x"
+	//        or   "../a/b".relativePath("/x/y")  => "/x/y"
+	// ---
+	// 2 If `dest` is RELATIVE, it is assumed based on the
+	//   location which `this` is based on, that is,
+	//   a) `/` if `this` is ABSOLUTE
+	//      `dest` is then strictly equiv to `/dest`  =>1
+	//      E.g  "/a/b".relativePath("a/x") => "../x"
+	//   b) an implicit shared basis if `this` is RELATIVE,
+	//      E.g   "a/b".relativePath("a/x") => "../x"
+	//      interpreted [B/]a/b -> [B/]a/x            =>1
+	//      Here a problem may arise if the point-to-point
+	//      route cannot be resolved, e.g
+	//         [B/]../a/b -> [B/]x/y      ; unresolvable
+	//      We cannot go from `../a/b` to `x/y` as this would
+	//      require B to be known (=> ../../B/x/y.)  In such
+	//      cases the function gets to FALSE.
+	//      However,
+	//          [B/]a/b    -> [B/]../x/y  =>  "../../../x/y"
+	//      or  [B/]../a/b -> [B/]../x/y  =>  "../../x/y"
+	//      can be successfully resolved due to the fact that
+	//      the final path does no longer involve B.
+	// ---
+	// => str [OK]  |  false [CANT_RESOLVE]
+	{
+		// [REM] asPath preserves the path type.
+		// ---
+		if( !(dest=dest.asPath()) ) return '';
+		if( !(from=this.asPath()) ) return dest;
+
+		'/' == (fAB=from.charAt(0)) || (fAB='');
+		'/' == (dAB=dest.charAt(0)) || (dAB='');
+
+		// 2a)  ABS(from) + REL(dest) --> ABS(dest)
+		// ---
+		fAB && (!dAB) && (dest=(dAB='/')+dest);
+
+		// 1b)  REL(from)+ABS(dest)   => return dest
+		// ---
+		if( (!fAB) && dAB ) return dest;
+
+		// 2b) REL(from)+ABS(from)
+		// Remove common starting '../' from both paths.
+		// If `from` has more UPs, return FALSE.
+		// ---
+		if( (!fAB) && (!dAB) )
+		{
+			while( '../'==from.substr(0,3) )
+			{
+				if( '../' != dest.substr(0,3) ) return false;
+				from = from.substr(3);
+				dest = dest.substr(3);
+			}
+
+			// From here,  `from` has no starting UP and
+			// the generic algorithm is fine.
+			// from :: a / b / c ;  dest :: UP* x / y
+		}
+
+		// ---
+		// Paths are now of the same kind,
+		// eiher REL->REL or ABS->ABS
+		// ---
+
+		// Normalize `from` (-> s0) and `dest` (-> s1)
+		// ---
+		'/' == (s0=from.toLowerCase()).substr(-1) || (s0+='/');
+		'/' == (s1=dest.toLowerCase()).substr(-1) || (s1+='/');
+
+		// Equality test.
+		// ---
+		if( s0==s1 ) return '';
+
+		// Generic algorithm.
+		// ---
+		// a/b/ -> a/b/x/y/   =>  ''     -> x/y/  => "x/y#"
+		// a/b/ -> a/x/y/     =>  'b/'   -> x/y/  => "../x/y#"
+		// a/b/ -> x/y/       =>  'a/b/' -> x/y/  => "../../x/y#"
+		// ---
+		for( eq=true ; (p=1+s0.indexOf('/')) ; s0=s0.substr(p) )
+		{
+			eq && (eq=s0.substr(0,p)==s1.substr(0,p)) && (s1=s1.substr(p));
+			dest = eq ? dest.substr(p) : ( '../'+dest );
+		}
+
+		return dest;
+	};
+
+
+	//==========================================================================
+	// String.prototype.trim() ltrim() rtrim()
+	//==========================================================================
+
+	String.prototype.trim = function trim(  i,j,cc)
+	//----------------------------------
+	// Left- and right-trim the string.
+	// [CHG180403] Added U+205F MEDIUM MATHEMATICAL SPACE
+	// <anyspace>*XXX<anyspace>*  =>  XXX.
+	{
+		for(
+			j=this.length, i=-1 ;
+			++i < j && (
+				0x20 >= (cc=this.charCodeAt(i)) || 0xA0==cc || (0x2000 <= cc && 0x200C >= cc) ||
+				0x2028 == cc || 0x2029 == cc || 0x202F == cc || 0x205F == cc || 0x3000 == cc )
+			;
+		);
+
+		while(
+			j-- && (
+				0x20 >= (cc=this.charCodeAt(j)) || 0xA0==cc || (0x2000 <= cc && 0x200C >= cc) ||
+				0x2028 == cc || 0x2029 == cc || 0x202F == cc || 0x205F == cc || 0x3000 == cc )
+		);
+
+
+		return j < i ? '' : this.substring(i, 1+j);
+	};
+
+	String.prototype.ltrim = function ltrim(  i,j,cc)
+	//----------------------------------
+	// Left-trim the string.
+	// [CHG180403] Added U+205F MEDIUM MATHEMATICAL SPACE
+	// <anyspace>*XXX  =>  XXX.
+	{
+		for(
+			j=this.length, i=-1 ;
+			++i < j && (
+				0x20 >= (cc=this.charCodeAt(i)) || 0xA0==cc || (0x2000 <= cc && 0x200C >= cc) ||
+				0x2028 == cc || 0x2029 == cc || 0x202F == cc || 0x205F == cc || 0x3000 == cc )
+			;
+		);
+
+		return i ? this.substr(i) : this;
+	};
+
+	String.prototype.rtrim = function rtrim(  j,cc)
+	//----------------------------------
+	// Right-trim the string.
+	// [CHG180403] Added U+205F MEDIUM MATHEMATICAL SPACE
+	// XXX<anyspace>*  =>  XXX.
+	{
+		for(
+			j=this.length ;
+			j-- && (
+				0x20 >= (cc=this.charCodeAt(j)) || 0xA0==cc || (0x2000 <= cc && 0x200C >= cc) ||
+				0x2028 == cc || 0x2029 == cc || 0x202F == cc || 0x205F == cc || 0x3000 == cc )
+			;
+		);
+
+		return j < 0 ? '' : this.substring(0, 1+j);
+	};
+
+	//==========================================================================
+	// String.prototype.rtrunc() ltrunc() trunc()
+	//==========================================================================
+
+	String.prototype.rtrunc = function rtrunc(/*uint>0*/maxSize,/*str='...'*/ellipsis,/*bool=0*/wordBound,  p,s,c)
+	//----------------------------------
+	// Remove the RIGHT part of the string if its length > maxSize.
+	//   `maxSize`   :: If this.length <= maxSize, the string is returned as is.
+	//                  Otherwise, at most maxSize characters are kept.
+	//   `ellipsis`  :: undefined (false, 0)  -> use `...` (three dots) ; default.
+	//                  true (1)              -> use U+2026 (Unicode character.)
+	//                  any string (incl. '') -> use it!
+	//   `wordbound` :: whether the result must preserve word boundaries.
+	// XXXYYY => XXX...
+	{
+		if( (p=maxSize>>>0) >= this.length ) return String(this);
+		s = this.substr(0,p); // Keep the left part.
+		wordBound && -1 != (p=s.lastIndexOf(' ')) && (s=s.substr(0,p));
+		c = 'string'==typeof ellipsis ? ellipsis : (ellipsis ? '\u2026' : '...');
+		return s.rtrim() + c;
+	};
+
+	String.prototype.ltrunc = function ltrunc(/*uint>0*/maxSize,/*str='...'*/ellipsis,/*bool=0*/wordBound,  p,s,c)
+	//----------------------------------
+	// Remove the LEFT part of the string if its length > maxSize.
+	//   `maxSize`   :: If this.length <= maxSize, the string is returned as is.
+	//                  Otherwise, at most maxSize characters are kept.
+	//   `ellipsis`  :: undefined (false, 0)  -> use `...` (three dots) ; default.
+	//                  true (1)              -> use U+2026 (Unicode character.)
+	//                  any string (incl. '') -> use it!
+	//   `wordbound` :: whether the result must preserve word boundaries.
+	// XXXYYY => ...YYY
+	{
+		if( (p=maxSize>>>0) >= this.length ) return String(this);
+		s = this.substr(-p); // Keep the right part.
+		wordBound && -1 != (p=s.indexOf(' ')) && (s=s.substr(1+p));
+		c = 'string'==typeof ellipsis ? ellipsis : (ellipsis ? '\u2026' : '...');
+		return c + s.ltrim();
+	};
+
+	String.prototype.trunc = function trunc(/*uint>0*/maxSize,/*str='...'*/ellipsis,/*bool=0*/wordBound,  p,c,x,s,t)
+	//----------------------------------
+	// Remove the MIDDLE part of the string if its length > maxSize.
+	//   `maxSize`   :: If this.length <= maxSize, the string is returned as is.
+	//                  Otherwise, at most maxSize characters are kept.
+	//   `ellipsis`  :: undefined (false, 0)  -> use `...` (three dots) ; default.
+	//                  true (1)              -> use U+2026 (Unicode character.)
+	//                  any string (incl. '') -> use it!
+	//   `wordbound` :: whether the result must preserve word boundaries.
+	// XXXYYYZZZ => XXX...ZZZ
+	{
+		if( (p=maxSize>>>0) >= this.length ) return String(this);
+		if( 1 == p ) return this.rtrunc(1,wordBound,ellipsis);
+
+		c = 'string'==typeof ellipsis ? ellipsis : (ellipsis ? '\u2026' : '...');
+		x = p >>> 1;
+		s = this.rtrunc(p-x,'',wordBound) + c + this.ltrunc(x,'',wordBound);
+		if( !wordBound || (x==p-x) ) return s;
+
+		// If `p` is odd and `wordBound` turned on, we may get a
+		// longer result from the split (x,p-x) instead of (p-x,x)
+		// ---
+		t = this.rtrunc(x,'',wordBound) + c + this.ltrunc(p-x,'',wordBound);
+		return t.length > s.length ? t : s;
+	};
+
+	//==========================================================================
+	// String.prototype.rpad() lpad()
+	//==========================================================================
+
+	String.prototype.rpad = function rpad(/*uint>0*/minSize,/*char=' '*/padChar,   p)
+	//----------------------------------
+	// [ADD200112] Extend the RIGHT part of the string til its length reaches minSize.
+	//   `minSize`   :: If this.length >= minSize, the string is returned as is.
+	//   `padChar`   :: Single character string, default is space (U+0020).
+	// E.g: ("abc",5) => "abc  "
+	// => str
+	{
+		p = (minSize>>>0) - this.length;
+		if( p <= 0 ) return String(this);
+		padChar = 'string' == typeof padChar ? padChar.charAt(0) : ' ';
+		return this.concat(Array.prototype.join.call({length:1+p}, padChar));
+	};
+
+	String.prototype.lpad = function lpad(/*uint>0*/minSize,/*char=' '*/padChar,   p)
+	//----------------------------------
+	// [ADD200112] Extend the LEFT part of the string til its length reaches minSize.
+	//   `minSize`   :: If this.length >= minSize, the string is returned as is.
+	//   `padChar`   :: Single character string, default is space (U+0020).
+	// E.g: ("abc",5) => "  abc"
+	// => str
+	{
+		p = (minSize>>>0) - this.length;
+		if( p <= 0 ) return String(this);
+		padChar = 'string' == typeof padChar ? padChar.charAt(0) : ' ';
+		return Array.prototype.join.call({length:1+p}, padChar).concat(this);
+	};
+
+	//==========================================================================
+	// String.prototype.stripSpaces()
+	//==========================================================================
+
+	String.prototype.stripSpaces = function stripSpaces()
+	//----------------------------------
+	// [ADD180403] Strip spaces from the string.
+	// <anyspace>*XXX<anyspace>*YYY<anyspace>* =>  XXXYYY
+	{
+		return this.replace(RegExp.SPCE,'');
+	};
+
+	//==========================================================================
+	// String.prototype.charSet()
+	//==========================================================================
+
+	String.prototype.charSet = function charSet(/*0|1=0*/KEEP_ORDER,  o,u,r,z,n,i,k)
+	//----------------------------------
+	// Return, as a string, the set of characters which belong to
+	// this string (UTF16 re-ordered unless KEEP_ORDER==1)
+	// "Hello Wonderful World!"  =>  " !HWdeflnoru"
+	// ---
+	// [REM] This routine remains efficient on large strings --note that
+	// this.charAt(i) is about **90X** faster than this[i]. A 150K string
+	// was processed in 170ms vs. 15s (tested in CS4-CC.)
+	// ---
+	// [ADD170320] KEEP_ORDER param.
+	{
+		for(
+			o={}, (u=void 0), z=(r=[]).length, n=this.length, i=-1 ;
+			++i < n ;
+			o.hasOwnProperty(k=this.charAt(i)) || (o[r[z++]=k]=u)
+		);
+
+		return ( KEEP_ORDER ? r : r.sort() ).join('');
+	};
