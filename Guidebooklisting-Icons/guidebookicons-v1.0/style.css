@@ -1,10 +1,10 @@
 @font-face {
   font-family: 'guidebookicons';
-  src:  url('fonts/guidebookicons.eot?49ijq3');
-  src:  url('fonts/guidebookicons.eot?49ijq3#iefix') format('embedded-opentype'),
-    url('fonts/guidebookicons.ttf?49ijq3') format('truetype'),
-    url('fonts/guidebookicons.woff?49ijq3') format('woff'),
-    url('fonts/guidebookicons.svg?49ijq3#guidebookicons') format('svg');
+  src:  url('fonts/guidebookicons.eot?big6rq');
+  src:  url('fonts/guidebookicons.eot?big6rq#iefix') format('embedded-opentype'),
+    url('fonts/guidebookicons.ttf?big6rq') format('truetype'),
+    url('fonts/guidebookicons.woff?big6rq') format('woff'),
+    url('fonts/guidebookicons.svg?big6rq#guidebookicons') format('svg');
   font-weight: normal;
   font-style: normal;
   font-display: block;
@@ -25,6 +25,9 @@
   -moz-osx-font-smoothing: grayscale;
 }
 
+.icon-accomodation_two:before {
+  content: "\6b";
+}
 .icon-sgs_75y:before {
   content: "\6a";
 }
